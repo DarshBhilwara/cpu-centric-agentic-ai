@@ -12,7 +12,7 @@ web_search → fetch_url → summarize → final_answer
  
 ### Pipeline Stages
  
-1. **Web Search** - Uses Google Custom Search API to retrieve relevant URLs
+1. **Web Search** - Uses Serper Google Search API to retrieve relevant URLs
 2. **Content Fetching** - Downloads and extracts plain text from web pages (parallel processing)
 3. **Summarization** - Generates extractive summaries using LexRank algorithm (parallel processing)
 4. **LLM Inference** - Produces final answers using a local VLLM-hosted language model
@@ -36,16 +36,14 @@ pip install nvtx
  
 ### External Services
  
-- **Google Custom Search API**: Requires `GOOGLE_API_KEY` and `GOOGLE_CX` environment variables
-    - Go to [Google API website](https://developers.google.com/custom-search/v1/introduction) to request an API key.
-        - Click on 'Gey a Key' button.
-        - Select or Create a new project.
-        - Click on 'CONFIRM AND CONTINUE' button.
-        - Click on 'SHOW KEY' button.
-    - Go to [Google CX website](https://programmablesearchengine.google.com/controlpanel/all) to request Google CX code.
-        - Select your search engine or Create one and go into that.
-        - You can find the CX id titled as "Search engine ID".
-        - Public URL also has the cx id in the Query param as ?cx=**.
+- **Serper API**: Requires a `SERPER_API_KEY` environment variable.
+    - Create a free account at https://serper.dev
+    - Generate an API key from the dashboard.
+    - Export it before running the orchestrator:
+
+    ```bash
+    export SERPER_API_KEY="your-serper-api-key"
+    ```
 - **VLLM Server**: Local LLM server running at `http://localhost:8000/v1`
     - `conda activate main` if already setup, otherwise install vllm from pip - `pip install vllm==0.11.0`
     - `export HF_HOME=/storage/ritikraj/hugging_face` if you want to use the downloaded model.
@@ -55,8 +53,7 @@ pip install nvtx
 ## Environment Setup
  
 ```bash
-export GOOGLE_API_KEY="your-google-api-key"
-export GOOGLE_CX="your-custom-search-engine-id"
+export SERPER_API_KEY="your-serper-api-key"
 ```
  
 ## Usage
@@ -93,7 +90,7 @@ nsys-ui output_profile.nsys-rep
 ### Timing Statistics
  
 The system tracks execution time for each stage:
-- **web_search**: Google API query time
+- **web_search**: Serper API query time
 - **fetch_url**: Web page download and parsing time
 - **summarize**: LexRank summarization time
 - **llm_inference**: LLM response generation time
@@ -140,7 +137,7 @@ for state in result_states:
  
 ## Error Handling
  
-- **Missing API Keys**: Raises `RuntimeError` if `GOOGLE_API_KEY` or `GOOGLE_CX` not set
+- **Missing API Key**: Raises `RuntimeError` if `SERPER_API_KEY` is not set.
 - **Network Errors**: Silently skips failed URL fetches, continues with available content
 - **Timeout Protection**: 10-second timeout on HTTP requests
  

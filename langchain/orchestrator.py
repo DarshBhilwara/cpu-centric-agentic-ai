@@ -44,25 +44,48 @@ def web_search(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     start_time = timeit.default_timer()
 
-    if state['skip_web_search'] == False:
-        key, cx = os.getenv('GOOGLE_API_KEY'), os.getenv('GOOGLE_CX')
-        if not key or not cx:
-            nvtx.pop_range(); raise RuntimeError('Missing GOOGLE_API_KEY or GOOGLE_CX')
-        params = {'key': key, 'cx': cx, 'q': state['query'], 'num': 10}
-        resp = requests.get('https://www.googleapis.com/customsearch/v1', params=params, timeout=10)
+    if not state["skip_web_search"]:
+        api_key = os.getenv("SERPER_API_KEY")
+        if not api_key:
+            nvtx.pop_range()
+            raise RuntimeError("Missing SERPER_API_KEY")
+
+        params = {
+            "q": state["query"],
+            "apiKey": api_key,
+            "num": 10
+        }
+
+        resp = requests.get(
+            "https://google.serper.dev/search",
+            params=params,
+            timeout=10
+        )
         resp.raise_for_status()
-        items = resp.json().get('items', [])
-        urls = [i['link'] for i in items if 'link' in i]
+
+        data = resp.json()
+        items = data.get("organic", [])
+        urls = [item["link"] for item in items if "link" in item]
+
     else:
-        urls = ['https://en.wikipedia.org/wiki/Spiel_des_Jahres', 'https://boardgamegeek.com/wiki/page/Spiel_des_Jahres', 'https://www.reddit.com/r/boardgames/comments/buwap5/are_previous_spiel_des_jahres_winners_now_too/', 'https://boardgamegeek.com/thread/3282083/spiel-des-jahres-winners-1979-to-2023-and-who-do-y', 'https://blog.recommend.games/posts/thoughts-on-spiel-des-jahres/', 'https://www.spiel-des-jahres.de/en/award-winners-2024/', 'https://www.facebook.com/groups/132851767828/posts/10162746926537829/', 'https://www.tabletopgaming.co.uk/news/spiel-des-jahres-2024-winners-announced/', 'https://therewillbe.games/board-game-lists-and-guides/6214-the-ten-greatest-spiel-des-jahres-winners', 'https://www.dicebreaker.com/topics/spiel-des-jahres/best-games/overlooked-spiel-des-jahres-winners']
- 
+        urls = [
+            "https://en.wikipedia.org/wiki/Spiel_des_Jahres",
+            "https://boardgamegeek.com/wiki/page/Spiel_des_Jahres",
+            "https://www.reddit.com/r/boardgames/comments/buwap5/are_previous_spiel_des_jahres_winners_now_too/",
+            "https://boardgamegeek.com/thread/3282083/spiel-des-jahres-winners-1979-to-2023-and-who-do-y",
+            "https://blog.recommend.games/posts/thoughts-on-spiel-des-jahres/",
+            "https://www.spiel-des-jahres.de/en/award-winners-2024/",
+            "https://www.facebook.com/groups/132851767828/posts/10162746926537829/",
+            "https://www.tabletopgaming.co.uk/news/spiel-des-jahres-2024-winners-announced/",
+            "https://therewillbe.games/board-game-lists-and-guides/6214-the-ten-greatest-spiel-des-jahres-winners",
+            "https://www.dicebreaker.com/topics/spiel-des-jahres/best-games/overlooked-spiel-des-jahres-winners",
+        ]
 
     elapsed = timeit.default_timer() - start_time
-    timing_stats['web_search'].append(elapsed)
+    timing_stats["web_search"].append(elapsed)
     # print(f"[TIMING] {marker}: {elapsed:.4f}s")
     nvtx.pop_range()
-    return {'urls': urls}
- 
+    return {"urls": urls}
  
  
 def _fetch_single(url: str, timeout: float = 10.0) -> Optional[str]:
@@ -256,8 +279,8 @@ if __name__ == '__main__':
     if args.verbose:
         print_timing_statistics()
  
-    # for state in result_states:
-    #     print(f"🧑 » {state['query']}")
-    #     print(f"🤖 » {state['final_response']}\n")
+    for state in result_states:
+        print(f"🧑 » {state['query']}")
+        print(f"🤖 » {state['final_response']}\n")
  
  
