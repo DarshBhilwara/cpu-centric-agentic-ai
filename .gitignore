@@ -32,7 +32,6 @@ huggingface/
 # Data files
 *.csv
 *.json
-*.jsonl
 *.parquet
 *.pkl
 *.pickle
