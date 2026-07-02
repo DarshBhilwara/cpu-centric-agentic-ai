@@ -1,4 +1,4 @@
-`````"""
+"""
 Batch web-LLM orchestrator using LangGraph batching with per-query NVTX markers.
 Accepts multiple queries as CLI args, runs the full tool chain in a single batched graph invocation, and marks each node per query.
 """
@@ -334,7 +334,6 @@ if __name__ == '__main__':
     # Create results directory if it doesn't exist
     os.makedirs("results", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    `````
     # 1. Save detailed benchmark results (JSON)
     detailed_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}.json")
     detailed_data = {
