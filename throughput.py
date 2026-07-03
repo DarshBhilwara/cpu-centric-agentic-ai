@@ -293,16 +293,15 @@ class LLMBenchmark:
         
         logger.info("Plots saved to llm_benchmark_results.png")
  
+from pathlib import Path
+import argparse
+
 async def main():
     parser = argparse.ArgumentParser(description='LLM Inference Benchmarking Tool')
-    parser.add_argument('--server-url', default='http://localhost:5000',
-                      help='vLLM server URL (default: http://localhost:5000)')
-    parser.add_argument('--output', default='/home/ritikraj/benchmark_results.json',
-                      help='Output JSON file (default: /home/ritikraj/benchmark_results.json)')
-    parser.add_argument('--load-results', type=str,
-                      help='Load results from existing JSON file instead of running benchmark')
-    parser.add_argument('--plot-only', action='store_true',
-                      help='Only generate plots from existing results file')
+    parser.add_argument('--server-url', default='http://localhost:5000',help='vLLM server URL (default: http://localhost:5000)')
+    parser.add_argument('--output',default=str(Path("benchmark_results.json")), help='Output JSON file (default: ./benchmark_results.json)')
+    parser.add_argument('--load-results',type=str,help='Load results from existing JSON file instead of running benchmark')
+    parser.add_argument('--plot-only',action='store_true',help='Only generate plots from existing results file')
     
     args = parser.parse_args()
     
