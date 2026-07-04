@@ -23,6 +23,8 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lex_rank import LexRankSummarizer
 from langgraph.graph import StateGraph
 from langchain_core.runnables.config import RunnableConfig
+from langchain_community.llms import VLLMOpenAI
+import matplotlib.pyplot as plt
 
 # Global timing storage for statistics categorized by hardware/resource type
 timing_stats = {
@@ -41,8 +43,7 @@ class GraphState(TypedDict):
     job_id: int
     skip_web_search: bool
 
-# 2) Tool implementations with dynamic NVTX markers
-
+# 2) Tool implementations
 def web_search(state: GraphState) -> GraphState:
     marker = f"web_search: {state['query'][:30]}"
     nvtx.push_range(marker)
@@ -142,7 +143,6 @@ def fetch_url(state_or_states):
         return result
 
 
-# --- helper: picklable worker function ---
 def _lexrank_one(text: str) -> str:
     """Run LexRank on a single document and return one-sentence summary."""
     summarizer = LexRankSummarizer()
@@ -172,11 +172,10 @@ def final_answer(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     start_time = timeit.default_timer()
     
-    from langchain_community.llms import VLLMOpenAI
     llm = VLLMOpenAI(
         base_url='http://localhost:5000/v1',
         model="openai/gpt-oss-20b",
-        openai_api_key='EMPTY'  # no API key required for local VLLM
+        openai_api_key='EMPTY'
     )
     
     prompt = f"Based on these summaries, answer: {state['query']}\n\n" + "\n\n".join(state['summaries'])
@@ -259,8 +258,7 @@ def load_random_questions(benchmark: str, num_tests: int) -> List[str]:
             if "question" in data:
                 q_text = data["question"]
                 
-                # If it's a multiple choice dataset like QASC, append the choices to the text
-                # to maintain realistic input token counts for latency benchmarking.
+                # If it's a multiple choice dataset like QASC, append the choices
                 if "choices" in data and isinstance(data["choices"], list):
                     choices_str = " ".join([f"({c.get('label', '')}) {c.get('text', '')}" for c in data["choices"]])
                     q_text = f"{q_text} {choices_str}"
@@ -273,7 +271,7 @@ def load_random_questions(benchmark: str, num_tests: int) -> List[str]:
     if num_tests > len(questions):
         print(f"[WARNING] Requested {num_tests} tests, but only {len(questions)} are available. Using all.")
         num_tests = len(questions)
-        
+
     # Shuffle and return the requested number of tests
     return random.sample(questions, num_tests)
 
@@ -281,79 +279,110 @@ def load_random_questions(benchmark: str, num_tests: int) -> List[str]:
 # 5) Batch invocation and Result Logging
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='LangChain batch orchestrator for latency/throughput visualization')
     parser.add_argument('--verbose', action='store_true', help='Enable output of per-stage latencies')
     parser.add_argument('--skip-web-search', action='store_true', help='Skip web search stage')
-    parser.add_argument('--sequential', action='store_true', help='Run multiple batches sequentially')
-    parser.add_argument('--batch-size', type=int, default=1, help="Langchain batch size (concurrency)")
     parser.add_argument('--job-id', type=int, default=1, help="Job id for bash multiprocessing")
     parser.add_argument('--benchmark', choices=["freshQA", "freshqa", "QASC", "qasc"], default="freshqa", help="Dataset to load")
-    parser.add_argument('--num-tests', type=int, default=1, help="Number of random questions to sample from the dataset")
-
     args = parser.parse_args()
 
-    # Determine batch configuration
-    max_concurrency = 1 if args.sequential else args.batch_size
-    job_id = args.job_id
-
-    # Load randomized queries from dataset
-    print(f"[INFO] Loading {args.num_tests} random queries from {args.benchmark} dataset...")
-    try:
-        queries = load_random_questions(args.benchmark, args.num_tests)
-    except Exception as e:
-        print(f"[ERROR] Failed to load dataset: {e}")
-        sys.exit(1)
- 
-    # Build LangGraph states
-    initial_states = [
-        {
-            'query': q, 
-            'urls': [], 
-            'page_texts': [], 
-            'summaries': [], 
-            'final_response': '', 
-            'job_id': job_id, 
-            'skip_web_search': args.skip_web_search
-        }
-        for q in queries
-    ]
-
-    cfg = RunnableConfig(max_concurrency=max_concurrency)
- 
-    nvtx.push_range('batch_run_all_queries')
-    start_time = timeit.default_timer()
- 
-    print(f"{job_id}: [TIMING] start: {start_time:.4f}s")
-
-    result_states = compiled_graph.batch(initial_states, config=cfg)
+    batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
+    latencies = []
+    throughputs = []
+    all_batch_results = {}
     
-    elapsed = timeit.default_timer() - start_time
-    print(f"{job_id}: [TIMING] end: {elapsed:.4f}s")
-    nvtx.pop_range()
- 
-    # Create results directory if it doesn't exist
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("./results", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # 1. Save detailed benchmark results (JSON)
+    
+    print(f"[INFO] Running benchmarks for dataset '{args.benchmark}' on batch sizes: {batch_sizes}")
+    
+    for batch_size in batch_sizes:
+        print(f"\n--- Testing Batch Size: {batch_size} ---")
+        try:
+            # We use `batch_size` as our `num_tests` parameter so the graph receives a list of exactly `batch_size` queries
+            queries = load_random_questions(args.benchmark, batch_size)
+        except Exception as e:
+            print(f"[ERROR] Failed to load dataset: {e}")
+            sys.exit(1)
+
+        initial_states = [
+            {
+                'query': q,
+                'urls': [],
+                'page_texts': [],
+                'summaries': [],
+                'final_response': '',
+                'job_id': args.job_id,
+                'skip_web_search': args.skip_web_search
+            }
+            for q in queries
+        ]
+
+        cfg = RunnableConfig(max_concurrency=batch_size)
+        
+        nvtx.push_range(f'batch_run_{batch_size}')
+        start_time = timeit.default_timer()
+        
+        # Run batch invocation
+        result_states = compiled_graph.batch(initial_states, config=cfg)
+        
+        end_time = timeit.default_timer()
+        total_time = end_time - start_time
+        nvtx.pop_range()
+        
+        throughput = batch_size / total_time
+        latencies.append(total_time)
+        throughputs.append(throughput)
+        
+        # Store results for this batch
+        all_batch_results[batch_size] = {
+            "latency_s": total_time,
+            "throughput_qps": throughput,
+            "states": result_states
+        }
+        
+        print(f"Batch {batch_size} Latency: {total_time:.2f}s | Throughput: {throughput:.2f} queries/s")
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(batch_sizes, latencies, marker='D', color='#96CEB4', linewidth=3, markersize=8)
+    plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
+    plt.ylabel('Latency (s)', fontsize=16, fontweight='bold')
+    plt.title('LangChain Orchestrator Latency vs Batch Size', fontsize=18, fontweight='bold')
+    plt.xscale('log', base=2)
+    plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
+    plt.grid(True, alpha=0.3)
+    latency_path = f"./results/langchain_latency_{timestamp}.png"
+    plt.savefig(latency_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(batch_sizes, throughputs, marker='D', color='#96CEB4', linewidth=3, markersize=8)
+    plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
+    plt.ylabel('Throughput (queries/sec)', fontsize=16, fontweight='bold')
+    plt.title('LangChain Orchestrator Throughput vs Batch Size', fontsize=18, fontweight='bold')
+    plt.xscale('log', base=2)
+    plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
+    plt.grid(True, alpha=0.3)
+    throughput_path = f"./results/langchain_throughput_{timestamp}.png"
+    plt.savefig(throughput_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
     detailed_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}.json")
     detailed_data = {
         "metadata": {
             "benchmark": args.benchmark.lower(),
-            "num_tests": args.num_tests,
-            "max_concurrency": max_concurrency,
-            "sequential": args.sequential,
+            "batch_sizes_tested": batch_sizes,
             "skip_web_search": args.skip_web_search,
-            "total_elapsed_time": elapsed,
-            "job_id": job_id
+            "job_id": args.job_id
         },
         "timing_stats_raw": timing_stats,
-        "results": result_states
+        "batch_results": all_batch_results
     }
     
     with open(detailed_file, 'w', encoding='utf-8') as f:
         json.dump(detailed_data, f, indent=4)
         
-    # 2. Generate and print summaries
     summary_text_blocks = []
     
     if args.verbose:
@@ -361,17 +390,21 @@ if __name__ == '__main__':
         print(stats_str)
         summary_text_blocks.append(stats_str)
         
-    summary_text_blocks.append("\n" + "="*70 + "\nRESULTS\n" + "="*70)
+    summary_text_blocks.append("\n" + "="*70 + "\nRESULTS PREVIEW\n" + "="*70)
     
-    for state in result_states:
-        res_str = f"🧑 » {state['query']}\n🤖 » {state['final_response']}\n"
-        print(res_str)
-        summary_text_blocks.append(res_str)
-        
-    # 3. Save textual summary
+    # We'll just print a preview of the last (largest) batch state to avoid terminal flood, 
+    # but write everything to the text file.
+    for batch, data in all_batch_results.items():
+        summary_text_blocks.append(f"\n--- BATCH SIZE: {batch} ---")
+        for state in data['states']:
+            res_str = f"🧑 » {state['query']}\n🤖 » {state['final_response']}\n"
+            summary_text_blocks.append(res_str)
+
     summary_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}_summary.txt")
     with open(summary_file, 'w', encoding='utf-8') as f:
         f.write("\n".join(summary_text_blocks))
         
-    print(f"\n[INFO] Detailed results saved to: {detailed_file}")
-    print(f"[INFO] Summary saved to: {summary_file}")
+    print(f"\n✅ Saved latency plot to {latency_path}")
+    print(f"✅ Saved throughput plot to {throughput_path}")
+    print(f"✅ Detailed JSON results saved to: {detailed_file}")
+    print(f"✅ Complete text summary saved to: {summary_file}")
