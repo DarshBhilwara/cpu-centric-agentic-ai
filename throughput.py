@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import List, Dict, Tuple
 import argparse
 import logging
+from pathlib import Path
  
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -144,7 +145,7 @@ class LLMBenchmark:
         
         logger.info("Benchmark completed!")
     
-    def save_results(self, filename: str = "benchmark_results.json"):
+    def save_results(self, filename: str = "./results/throughput_results.json"):
         """Save results to JSON file."""
         timestamp = datetime.now().isoformat()
         data = {
@@ -159,7 +160,7 @@ class LLMBenchmark:
         
         logger.info(f"Results saved to {filename}")
     
-    def load_results(self, filename: str = "benchmark_results.json"):
+    def load_results(self, filename: str = "./results/throughput_results.json"):
         """Load results from JSON file."""
         with open(filename, 'r') as f:
             data = json.load(f)
@@ -167,7 +168,7 @@ class LLMBenchmark:
         self.results = data['results']
         logger.info(f"Results loaded from {filename}")
     
-    def plot_results(self):
+    def plot_results(self, save_path: str = "./results/throughput_results.png"):
         """Create comprehensive plots of the benchmark results."""
         if not self.results:
             logger.error("No results to plot!")
@@ -288,22 +289,23 @@ class LLMBenchmark:
         plt.ylim(0, 105)
         
         plt.tight_layout()
-        plt.savefig('llm_benchmark_results.png', dpi=300, bbox_inches='tight')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.show()
         
-        logger.info("Plots saved to llm_benchmark_results.png")
+        logger.info(f"Plots saved to {save_path}")
  
-from pathlib import Path
-import argparse
-
 async def main():
     parser = argparse.ArgumentParser(description='LLM Inference Benchmarking Tool')
     parser.add_argument('--server-url', default='http://localhost:5000',help='vLLM server URL (default: http://localhost:5000)')
-    parser.add_argument('--output',default=str(Path("benchmark_results.json")), help='Output JSON file (default: ./benchmark_results.json)')
+    parser.add_argument('--output',default=str(Path("./results/throughput_results.json")), help='Output JSON file (default: ./results/throughput_results.json)')
     parser.add_argument('--load-results',type=str,help='Load results from existing JSON file instead of running benchmark')
     parser.add_argument('--plot-only',action='store_true',help='Only generate plots from existing results file')
     
     args = parser.parse_args()
+    
+    # Ensure the results directory exists
+    output_dir = Path(args.output).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     benchmark = LLMBenchmark(args.server_url)
     
@@ -325,8 +327,9 @@ async def main():
     else:
         benchmark.load_results(args.output)
     
-    # benchmark.plot_results()
+    # Save plots to the same directory as the output JSON file
+    plot_path = str(output_dir / "throughput_results.png")
+    benchmark.plot_results(save_path=plot_path)
  
 if __name__ == "__main__":
     asyncio.run(main())
- 
