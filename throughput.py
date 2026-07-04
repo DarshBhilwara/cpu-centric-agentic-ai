@@ -18,7 +18,8 @@ import asyncio
 import aiohttp
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+from matplotlib.ticker import FuncFormatter
+from matplotlib.lines import Line2D
 from datetime import datetime
 from typing import List, Dict, Tuple
 import argparse
@@ -28,6 +29,12 @@ from pathlib import Path
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def thousands_formatter(x, pos):
+    if x >= 1000:
+        return f'{int(x/1000)}k'
+    else:
+        return f'{int(x)}'
  
 class LLMBenchmark:
     def __init__(self, server_url: str = "http://localhost:5000"):
@@ -100,20 +107,20 @@ class LLMBenchmark:
                     'batch_size': batch_size,
                     'input_tokens': input_tokens,
                     'output_tokens': output_tokens,
-                    'throughput_req_per_sec': 0,
+                    'throughput_tokens_per_sec': 0,
                     'batch_time': 0,
                     'successful': False
                 }
             
             batch_time = batch_end - batch_start
-            throughput = batch_size / batch_time  # requests per second
-            logger.info(f"Completed in {batch_time:.2f}s - {throughput:.2f} req/s")
+            throughput_tok = batch_size * (input_tokens + output_tokens) / batch_time
+            logger.info(f"Completed in {batch_time:.2f}s - {throughput_tok:.2f} tokens/s")
         
         result = {
             'batch_size': batch_size,
             'input_tokens': input_tokens,
             'output_tokens': output_tokens,
-            'throughput_req_per_sec': throughput,
+            'throughput_tokens_per_sec': throughput_tok,
             'batch_time': batch_time,
             'successful': True
         }
@@ -164,146 +171,120 @@ class LLMBenchmark:
         """Load results from JSON file."""
         with open(filename, 'r') as f:
             data = json.load(f)
-        
-        self.results = data['results']
+
+        self.results = data.get('results', data)
         logger.info(f"Results loaded from {filename}")
-    
-    def plot_results(self, save_path: str = "./results/throughput_results.png"):
-        """Create comprehensive plots of the benchmark results."""
-        if not self.results:
+
+    def print_analysis(self):
+        """Print detailed analysis of the results to the terminal."""
+        successful_results = [r for r in self.results if r.get('successful', True)]
+        if not successful_results:
+            logger.warning("No successful results to analyze.")
+            return
+
+        print("\n" + "=" * 90)
+        print("🚀 TOKEN THROUGHPUT BENCHMARK ANALYSIS")
+        print("=" * 90)
+        print(f"{'Batch Size':<12} {'Input':<10} {'Output':<10} {'Batch Time':<12} {'Tokens/s':<15} {'Success':<10}")
+        print("-" * 90)
+     
+        tokens_per_sec_list = []
+        for r in successful_results:
+            bs = r['batch_size']
+            inp = r['input_tokens']
+            out = r['output_tokens']
+            bt = r['batch_time']
+            # Fallback calculation if loading older JSON, otherwise use the stored metric
+            tps = r.get('throughput_tokens_per_sec', bs * (inp + out) / bt)
+            tokens_per_sec_list.append((tps, r))
+            print(f"{bs:<12} {inp:<10} {out:<10} {bt:<12.2f} {tps:<15.2f} ✓")
+     
+        if tokens_per_sec_list:
+            max_tps, max_r = max(tokens_per_sec_list, key=lambda x: x[0])
+            min_tps, _ = min(tokens_per_sec_list, key=lambda x: x[0])
+            avg_tps = sum(x[0] for x in tokens_per_sec_list) / len(tokens_per_sec_list)
+     
+            print(f"\n🎯 Key Insights:")
+            print(f"   • Best throughput: {max_tps:.2f} tokens/s (Batch size: {max_r['batch_size']}, In/Out: {max_r['input_tokens']}/{max_r['output_tokens']})")
+            print(f"   • Worst throughput: {min_tps:.2f} tokens/s")
+            print(f"   • Average throughput: {avg_tps:.2f} tokens/s")
+     
+        batch_sizes = sorted(set(r['batch_size'] for r in successful_results))
+        print(f"\n📊 Throughput by Batch Size:")
+        for bs in batch_sizes:
+            bs_tps = [tps for tps, r in tokens_per_sec_list if r['batch_size'] == bs]
+            if bs_tps:
+                print(f"   • Batch size {bs}: {sum(bs_tps)/len(bs_tps):.2f} tokens/s average")
+
+    def plot_token_throughput(self, save_path: str):
+        """Create Token Throughput vs Batch Size plot."""
+        successful_results = [r for r in self.results if r.get('successful', True)]
+        if not successful_results:
             logger.error("No results to plot!")
             return
+            
+        batch_sizes = [r['batch_size'] for r in successful_results]
+        input_tokens = [r['input_tokens'] for r in successful_results]
+        output_tokens = [r['output_tokens'] for r in successful_results]
         
-        # Convert results to structured format for plotting
-        batch_sizes = sorted(list(set(r['batch_size'] for r in self.results)))
-        input_tokens = sorted(list(set(r['input_tokens'] for r in self.results)))
-        output_tokens = sorted(list(set(r['output_tokens'] for r in self.results)))
+        tokens_per_sec = [
+            r.get('throughput_tokens_per_sec', r['batch_size'] * (r['input_tokens'] + r['output_tokens']) / r['batch_time'])
+            for r in successful_results
+        ]
         
-        # Create figure with multiple subplots
-        fig = plt.figure(figsize=(20, 16))
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        unique_input_tokens = sorted(set(input_tokens))
+        unique_output_tokens = sorted(set(output_tokens))
+     
+        colors = plt.cm.tab10(np.linspace(0, 1, len(unique_input_tokens)))
+        markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h'][:len(unique_output_tokens)]
+        color_map = {inp: colors[i] for i, inp in enumerate(unique_input_tokens)}
+        marker_map = {out: markers[i] for i, out in enumerate(unique_output_tokens)}
+     
+        token_combinations = sorted(set(zip(input_tokens, output_tokens)))
+     
+        for inp, out in token_combinations:
+            indices = [i for i in range(len(successful_results))
+                       if input_tokens[i] == inp and output_tokens[i] == out]
+     
+            x_vals = [batch_sizes[i] for i in indices]
+            y_vals = [tokens_per_sec[i] for i in indices]
+     
+            sorted_pairs = sorted(zip(x_vals, y_vals))
+            x_vals_sorted = [x for x, y in sorted_pairs]
+            y_vals_sorted = [y for x, y in sorted_pairs]
+     
+            ax.plot(x_vals_sorted, y_vals_sorted, marker=marker_map[out], linestyle='-',
+                    linewidth=2, markersize=8, color=color_map[inp], alpha=0.7)
+     
+        ax.set_xlabel('Batch Size', fontsize=18, fontweight='bold')
+        ax.set_xscale('log', base=2)
+        ax.set_ylabel('Throughput (tokens/s)', fontsize=18, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(axis='both', which='major', labelsize=14)
+        ax.yaxis.set_major_formatter(FuncFormatter(thousands_formatter))
         
-        # 1. Throughput vs Batch Size for different input/output combinations
-        plt.subplot(2, 3, 1)
-        for input_tok in input_tokens:
-            for output_tok in output_tokens:
-                x_vals = []
-                y_vals = []
-                for result in self.results:
-                    if result['input_tokens'] == input_tok and result['output_tokens'] == output_tok:
-                        x_vals.append(result['batch_size'])
-                        y_vals.append(result['throughput_req_per_sec'])
-                
-                if x_vals:
-                    plt.plot(x_vals, y_vals, marker='o',
-                           label=f'In:{input_tok}, Out:{output_tok}')
-        
-        plt.xlabel('Batch Size')
-        plt.ylabel('Throughput (req/s)')
-        plt.title('Throughput vs Batch Size')
-        plt.xscale('log', base=2)
-        plt.yscale('log')
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True, alpha=0.3)
-        
-        # 2. Heatmap: Batch Size vs Input Tokens (averaged over output tokens)
-        plt.subplot(2, 3, 2)
-        heatmap_data = np.zeros((len(batch_sizes), len(input_tokens)))
-        
-        for i, batch_size in enumerate(batch_sizes):
-            for j, input_tok in enumerate(input_tokens):
-                throughputs = [r['throughput_req_per_sec'] for r in self.results
-                             if r['batch_size'] == batch_size and r['input_tokens'] == input_tok]
-                heatmap_data[i, j] = np.mean(throughputs) if throughputs else 0
-        
-        sns.heatmap(heatmap_data,
-                   xticklabels=input_tokens,
-                   yticklabels=batch_sizes,
-                   annot=True, fmt='.1f', cmap='viridis')
-        plt.xlabel('Input Tokens')
-        plt.ylabel('Batch Size')
-        plt.title('Avg Throughput Heatmap\n(Batch Size vs Input Tokens)')
-        
-        # 3. Heatmap: Batch Size vs Output Tokens (averaged over input tokens)
-        plt.subplot(2, 3, 3)
-        heatmap_data = np.zeros((len(batch_sizes), len(output_tokens)))
-        
-        for i, batch_size in enumerate(batch_sizes):
-            for j, output_tok in enumerate(output_tokens):
-                throughputs = [r['throughput_req_per_sec'] for r in self.results
-                             if r['batch_size'] == batch_size and r['output_tokens'] == output_tok]
-                heatmap_data[i, j] = np.mean(throughputs) if throughputs else 0
-        
-        sns.heatmap(heatmap_data,
-                   xticklabels=output_tokens,
-                   yticklabels=batch_sizes,
-                   annot=True, fmt='.1f', cmap='viridis')
-        plt.xlabel('Output Tokens')
-        plt.ylabel('Batch Size')
-        plt.title('Avg Throughput Heatmap\n(Batch Size vs Output Tokens)')
-        
-        # 4. Box plot: Throughput distribution by batch size
-        plt.subplot(2, 3, 4)
-        batch_throughputs = {}
-        for batch_size in batch_sizes:
-            batch_throughputs[batch_size] = [r['throughput_req_per_sec'] for r in self.results
-                                           if r['batch_size'] == batch_size]
-        
-        plt.boxplot([batch_throughputs[bs] for bs in batch_sizes],
-                   labels=batch_sizes)
-        plt.xlabel('Batch Size')
-        plt.ylabel('Throughput (req/s)')
-        plt.title('Throughput Distribution by Batch Size')
-        plt.yscale('log')
-        
-        # 5. Average batch time vs batch size
-        plt.subplot(2, 3, 5)
-        avg_times_by_batch = {}
-        for batch_size in batch_sizes:
-            times = [r['batch_time'] for r in self.results if r['batch_size'] == batch_size and r.get('successful', True)]
-            avg_times_by_batch[batch_size] = np.mean(times) if times else 0
-        
-        plt.plot(list(avg_times_by_batch.keys()), list(avg_times_by_batch.values()),
-                'bo-', linewidth=2, markersize=8)
-        plt.xlabel('Batch Size')
-        plt.ylabel('Average Batch Time (s)')
-        plt.title('Average Batch Time vs Batch Size')
-        plt.xscale('log', base=2)
-        plt.yscale('log')
-        plt.grid(True, alpha=0.3)
-        
-        # 6. Success rate by batch size
-        plt.subplot(2, 3, 6)
-        success_rates = {}
-        for batch_size in batch_sizes:
-            batch_results = [r for r in self.results if r['batch_size'] == batch_size]
-            if batch_results:
-                successful = sum(1 for r in batch_results if r.get('successful', True))
-                total = len(batch_results)
-                success_rates[batch_size] = (successful / total) * 100 if total > 0 else 0
-        
-        plt.bar(list(success_rates.keys()), list(success_rates.values()),
-               color='lightgreen', alpha=0.7)
-        plt.xlabel('Batch Size')
-        plt.ylabel('Success Rate (%)')
-        plt.title('Success Rate by Batch Size')
-        plt.ylim(0, 105)
+        input_legend = [Line2D([0], [0], color=color_map[inp], linewidth=2, label=f'Input: {inp}')
+                        for inp in unique_input_tokens]
+        output_legend = [Line2D([0], [0], marker=marker_map[out], color='gray', linestyle='None', 
+                                markersize=8, label=f'Output: {out}')
+                         for out in unique_output_tokens]
+     
+        ax.legend(handles=input_legend + output_legend, loc='best',
+                  fontsize=12, ncol=2, framealpha=0.5, columnspacing=0.2)
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-        
-        logger.info(f"Plots saved to {save_path}")
+        logger.info(f"Plot saved to {save_path}")
  
 async def main():
     parser = argparse.ArgumentParser(description='LLM Inference Benchmarking Tool')
-    parser.add_argument('--server-url', default='http://localhost:5000',help='vLLM server URL (default: http://localhost:5000)')
-    parser.add_argument('--output',default=str(Path("./results/throughput_results.json")), help='Output JSON file (default: ./results/throughput_results.json)')
-    parser.add_argument('--load-results',type=str,help='Load results from existing JSON file instead of running benchmark')
-    parser.add_argument('--plot-only',action='store_true',help='Only generate plots from existing results file')
+    parser.add_argument('--server-url', default='http://localhost:5000', help='vLLM server URL')
+    parser.add_argument('--output', default=str(Path("./results/throughput_results.json")), help='Output JSON file')
+    parser.add_argument('--load-results', type=str, help='Load results from JSON instead of running benchmark')
     
     args = parser.parse_args()
     
-    # Ensure the results directory exists
     output_dir = Path(args.output).parent
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -311,8 +292,7 @@ async def main():
     
     if args.load_results:
         benchmark.load_results(args.load_results)
-    elif not args.plot_only:
-        # Check if server is accessible
+    else:
         try:
             response = requests.get(f"{args.server_url}/health", timeout=10)
             if response.status_code != 200:
@@ -324,12 +304,11 @@ async def main():
         
         await benchmark.run_full_benchmark()
         benchmark.save_results(args.output)
-    else:
-        benchmark.load_results(args.output)
     
-    # Save plots to the same directory as the output JSON file
+    benchmark.print_analysis()
+    
     plot_path = str(output_dir / "throughput_results.png")
-    benchmark.plot_results(save_path=plot_path)
+    benchmark.plot_token_throughput(save_path=plot_path)
  
 if __name__ == "__main__":
     asyncio.run(main())
