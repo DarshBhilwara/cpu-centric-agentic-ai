@@ -243,6 +243,9 @@ if __name__ == '__main__':
 
     latencies = []
     throughputs = []
+    stage_latencies_summarize = []
+    stage_latencies_llm = []
+    
     all_batch_results = {}
     
     os.makedirs("./results", exist_ok=True)
@@ -271,6 +274,8 @@ if __name__ == '__main__':
         ]
 
         cfg = RunnableConfig(max_concurrency=batch_size)
+        sum_idx = len(timing_stats['cpu']['summarize_lexrank'])
+        llm_idx = len(timing_stats['gpu']['llm_inference_gpt_oss_20b'])
         
         nvtx.push_range(f'batch_run_{batch_size}')
         start_time = timeit.default_timer()
@@ -281,25 +286,37 @@ if __name__ == '__main__':
         end_time = timeit.default_timer()
         total_time = end_time - start_time
         nvtx.pop_range()
+        batch_sum_times = timing_stats['cpu']['summarize_lexrank'][sum_idx:]
+        batch_llm_times = timing_stats['gpu']['llm_inference_gpt_oss_20b'][llm_idx:]
+        max_sum_latency = max(batch_sum_times) if batch_sum_times else 0
+        max_llm_latency = max(batch_llm_times) if batch_llm_times else 0
         
         throughput = batch_size / total_time
         latencies.append(total_time)
         throughputs.append(throughput)
+        stage_latencies_summarize.append(max_sum_latency)
+        stage_latencies_llm.append(max_llm_latency)
         
         # Store results for this batch
         all_batch_results[batch_size] = {
             "latency_s": total_time,
             "throughput_qps": throughput,
+            "summarization_latency_s": max_sum_latency,
+            "llm_inference_latency_s": max_llm_latency,
             "states": result_states
         }
         
-        print(f"Batch {batch_size} Latency: {total_time:.2f}s | Throughput: {throughput:.2f} queries/s")
+        print(f"Batch {batch_size} Overall Latency: {total_time:.2f}s | Throughput: {throughput:.2f} q/s")
+        print(f"  -> Sum. Latency: {max_sum_latency:.2f}s | LLM Latency: {max_llm_latency:.2f}s")
 
+    # --- Plotting section ---
+
+    # 1) Overall Latency Plot
     plt.figure(figsize=(10, 6))
     plt.plot(batch_sizes, latencies, marker='D', color='#96CEB4', linewidth=3, markersize=8)
     plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
     plt.ylabel('Latency (s)', fontsize=16, fontweight='bold')
-    plt.title('LangChain Orchestrator Latency vs Batch Size', fontsize=18, fontweight='bold')
+    plt.title('LangChain Orchestrator Overall Latency', fontsize=18, fontweight='bold')
     plt.xscale('log', base=2)
     plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
     plt.grid(True, alpha=0.3)
@@ -307,6 +324,7 @@ if __name__ == '__main__':
     plt.savefig(latency_path, dpi=300, bbox_inches='tight')
     plt.close()
 
+    # 2) Overall Throughput Plot
     plt.figure(figsize=(10, 6))
     plt.plot(batch_sizes, throughputs, marker='D', color='#96CEB4', linewidth=3, markersize=8)
     plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
@@ -319,7 +337,22 @@ if __name__ == '__main__':
     plt.savefig(throughput_path, dpi=300, bbox_inches='tight')
     plt.close()
 
+    # 3) Component Stage Latency Plot (Summarization vs LLM)
+    plt.figure(figsize=(10, 6))
+    plt.plot(batch_sizes, stage_latencies_summarize, marker='o', color='#FF9999', linewidth=3, markersize=8, label='Summarization (CPU)')
+    plt.plot(batch_sizes, stage_latencies_llm, marker='s', color='#66B2FF', linewidth=3, markersize=8, label='LLM Inference (GPU)')
+    plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
+    plt.ylabel('Stage Latency (s)', fontsize=16, fontweight='bold')
+    plt.title('Summarization vs LLM Inference Latency', fontsize=18, fontweight='bold')
+    plt.xscale('log', base=2)
+    plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    stage_latency_path = f"./results/stage_latency_{timestamp}.png"
+    plt.savefig(stage_latency_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
+    # --- Output Logging ---
     detailed_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}.json")
     detailed_data = {
         "metadata": {
@@ -346,6 +379,11 @@ if __name__ == '__main__':
 
     for batch, data in all_batch_results.items():
         summary_text_blocks.append(f"\n--- BATCH SIZE: {batch} ---")
+        summary_text_blocks.append(f"• Total Latency:          {data['latency_s']:.2f}s")
+        summary_text_blocks.append(f"• Throughput:             {data['throughput_qps']:.2f} queries/s")
+        summary_text_blocks.append(f"• Summarization Latency:  {data['summarization_latency_s']:.2f}s (Concurrent Max)")
+        summary_text_blocks.append(f"• LLM Inference Latency:  {data['llm_inference_latency_s']:.2f}s (Concurrent Max)\n")
+        
         for state in data['states']:
             res_str = f"🧑 » {state['query']}\n🤖 » {state['final_response']}\n"
             summary_text_blocks.append(res_str)
@@ -354,7 +392,8 @@ if __name__ == '__main__':
     with open(summary_file, 'w', encoding='utf-8') as f:
         f.write("\n".join(summary_text_blocks))
         
-    print(f"\n✅ Saved latency plot to {latency_path}")
-    print(f"✅ Saved throughput plot to {throughput_path}")
+    print(f"\n✅ Saved overall latency plot to {latency_path}")
+    print(f"✅ Saved overall throughput plot to {throughput_path}")
+    print(f"✅ Saved component stage latency plot to {stage_latency_path}")
     print(f"✅ Detailed JSON results saved to: {detailed_file}")
     print(f"✅ Complete text summary saved to: {summary_file}")
