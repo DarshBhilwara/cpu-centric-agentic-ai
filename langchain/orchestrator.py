@@ -243,10 +243,10 @@ if __name__ == '__main__':
     latencies = []
     throughputs = []
     
-    # Lists to store the 3 core stages for plotting
-    stage_latencies_network = []
-    stage_latencies_summarize = []
-    stage_latencies_llm = []
+    # Lists to store the 3 core stages for plotting (Min, Max, Avg)
+    stage_stats_network = {"min": [], "max": [], "avg": []}
+    stage_stats_summarize = {"min": [], "max": [], "avg": []}
+    stage_stats_llm = {"min": [], "max": [], "avg": []}
     
     all_batch_results = {}
     
@@ -254,6 +254,16 @@ if __name__ == '__main__':
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     pool_cursor = 0
+    
+    def calculate_stats(times):
+        if not times:
+            return {"min": 0, "max": 0, "avg": 0, "total": 0}
+        return {
+            "min": min(times),
+            "max": max(times),
+            "avg": sum(times) / len(times),
+            "total": sum(times)
+        }
     
     for batch_size in batch_sizes:
         print(f"\n--- Testing Batch Size: {batch_size} ---")
@@ -299,44 +309,56 @@ if __name__ == '__main__':
         batch_sum_times = timing_stats['cpu']['summarize_lexrank'][sum_idx:]
         batch_llm_times = timing_stats['gpu']['llm_inference_gpt_oss_20b'][llm_idx:]
         
-        # Max represents the bottleneck for concurrent tasks
-        max_ws_latency = max(batch_ws_times) if batch_ws_times else 0
-        max_fetch_latency = max(batch_fetch_times) if batch_fetch_times else 0
-        max_sum_latency = max(batch_sum_times) if batch_sum_times else 0
-        max_llm_latency = max(batch_llm_times) if batch_llm_times else 0
+        # Calculate deep statistics
+        ws_stats = calculate_stats(batch_ws_times)
+        fetch_stats = calculate_stats(batch_fetch_times)
+        sum_stats = calculate_stats(batch_sum_times)
+        llm_stats = calculate_stats(batch_llm_times)
         
-        # Combine the network-bound stages
-        combined_network_latency = max_ws_latency + max_fetch_latency
+        # Combined network approximations per query
+        network_min = ws_stats["min"] + fetch_stats["min"]
+        network_max = ws_stats["max"] + fetch_stats["max"]
+        network_avg = ws_stats["avg"] + fetch_stats["avg"]
 
         throughput = batch_size / total_time
         latencies.append(total_time)
         throughputs.append(throughput)
         
-        # Store for plotting
-        stage_latencies_network.append(combined_network_latency)
-        stage_latencies_summarize.append(max_sum_latency)
-        stage_latencies_llm.append(max_llm_latency)
+        # Store for detailed plotting
+        stage_stats_network["min"].append(network_min)
+        stage_stats_network["max"].append(network_max)
+        stage_stats_network["avg"].append(network_avg)
+        
+        stage_stats_summarize["min"].append(sum_stats["min"])
+        stage_stats_summarize["max"].append(sum_stats["max"])
+        stage_stats_summarize["avg"].append(sum_stats["avg"])
+        
+        stage_stats_llm["min"].append(llm_stats["min"])
+        stage_stats_llm["max"].append(llm_stats["max"])
+        stage_stats_llm["avg"].append(llm_stats["avg"])
         
         # Store comprehensive results for this batch
         all_batch_results[batch_size] = {
             "latency_s": total_time,
             "throughput_qps": throughput,
-            "network_latency_s": combined_network_latency,
-            "summarization_latency_s": max_sum_latency,
-            "llm_inference_latency_s": max_llm_latency,
+            "details": {
+                "network": {"min": network_min, "max": network_max, "avg": network_avg},
+                "summarization": sum_stats,
+                "llm_inference": llm_stats,
+            },
             "states": result_states
         }
         
-        # Calculate accounted time vs overhead
-        accounted_time = combined_network_latency + max_sum_latency + max_llm_latency
+        # Calculate accounted time vs overhead using max (since parallel tasks bottleneck at the max)
+        accounted_time = network_max + sum_stats["max"] + llm_stats["max"]
         overhead = total_time - accounted_time
 
         print(f"Batch {batch_size} Overall Latency: {total_time:.2f}s | Throughput: {throughput:.2f} q/s")
-        print(f"  -> Pipeline Breakdown:")
-        print(f"     1. Network (Search+Fetch): {combined_network_latency:.2f}s")
-        print(f"     2. Summarization (CPU):    {max_sum_latency:.2f}s")
-        print(f"     3. LLM Inference (GPU):    {max_llm_latency:.2f}s")
-        print(f"     *. Graph Overhead:         {overhead:.2f}s")
+        print(f"  -> Pipeline Breakdown (Min / Avg / Max):")
+        print(f"     1. Network:       {network_min:.2f}s / {network_avg:.2f}s / {network_max:.2f}s")
+        print(f"     2. Summarization: {sum_stats['min']:.2f}s / {sum_stats['avg']:.2f}s / {sum_stats['max']:.2f}s")
+        print(f"     3. LLM Inference: {llm_stats['min']:.2f}s / {llm_stats['avg']:.2f}s / {llm_stats['max']:.2f}s")
+        print(f"     *. Graph Overhead:{overhead:.2f}s")
 
     # --- Plotting section ---
 
@@ -366,17 +388,23 @@ if __name__ == '__main__':
     plt.savefig(throughput_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    # 3) Component Stage Latency Plot (Network vs Summarization vs LLM)
-    plt.figure(figsize=(10, 6))
-    plt.plot(batch_sizes, stage_latencies_network, marker='^', color='#FFCC99', linewidth=3, markersize=8, label='Network (Search+Fetch)')
-    plt.plot(batch_sizes, stage_latencies_summarize, marker='o', color='#FF9999', linewidth=3, markersize=8, label='Summarization (CPU)')
-    plt.plot(batch_sizes, stage_latencies_llm, marker='s', color='#66B2FF', linewidth=3, markersize=8, label='LLM Inference (GPU)')
+    # 3) Component Stage Latency Plot (Network vs Summarization vs LLM) with Min/Max Bands
+    plt.figure(figsize=(12, 7))
+    
+    # Summarization Plot (Avg line + Min/Max fill)
+    plt.plot(batch_sizes, stage_stats_summarize["avg"], marker='o', color='#FF9999', linewidth=3, markersize=8, label='Summarization Avg (CPU)')
+    plt.fill_between(batch_sizes, stage_stats_summarize["min"], stage_stats_summarize["max"], color='#FF9999', alpha=0.2, label='Summarization Min/Max')
+    
+    # LLM Plot (Avg line + Min/Max fill)
+    plt.plot(batch_sizes, stage_stats_llm["avg"], marker='s', color='#66B2FF', linewidth=3, markersize=8, label='LLM Inference Avg (GPU)')
+    plt.fill_between(batch_sizes, stage_stats_llm["min"], stage_stats_llm["max"], color='#66B2FF', alpha=0.2, label='LLM Min/Max')
+
     plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
     plt.ylabel('Stage Latency (s)', fontsize=16, fontweight='bold')
-    plt.title('Pipeline Stage Latencies (Network vs CPU vs GPU)', fontsize=18, fontweight='bold')
+    plt.title('Pipeline Stage Latencies (Avg with Min/Max Bands)', fontsize=18, fontweight='bold')
     plt.xscale('log', base=2)
     plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
-    plt.legend(fontsize=12)
+    plt.legend(fontsize=10, loc='upper left')
     plt.grid(True, alpha=0.3)
     stage_latency_path = f"./results/stage_latency_{timestamp}.png"
     plt.savefig(stage_latency_path, dpi=300, bbox_inches='tight')
@@ -405,15 +433,18 @@ if __name__ == '__main__':
         print(stats_str)
         summary_text_blocks.append(stats_str)
         
-    summary_text_blocks.append("\n" + "="*70 + "\nRESULTS PREVIEW\n" + "="*70)
+    summary_text_blocks.append("\n" + "="*70 + "\nDETAILED RESULTS PREVIEW\n" + "="*70)
 
     for batch, data in all_batch_results.items():
         summary_text_blocks.append(f"\n--- BATCH SIZE: {batch} ---")
         summary_text_blocks.append(f"• Total Latency:          {data['latency_s']:.2f}s")
         summary_text_blocks.append(f"• Throughput:             {data['throughput_qps']:.2f} queries/s")
-        summary_text_blocks.append(f"• Network Latency:        {data['network_latency_s']:.2f}s (Concurrent Max)")
-        summary_text_blocks.append(f"• Summarization Latency:  {data['summarization_latency_s']:.2f}s (Concurrent Max)")
-        summary_text_blocks.append(f"• LLM Inference Latency:  {data['llm_inference_latency_s']:.2f}s (Concurrent Max)\n")
+        
+        d = data['details']
+        summary_text_blocks.append("\n  [Stage Breakdown - Min / Avg / Max]")
+        summary_text_blocks.append(f"  • Network:       {d['network']['min']:.3f}s / {d['network']['avg']:.3f}s / {d['network']['max']:.3f}s")
+        summary_text_blocks.append(f"  • Summarization: {d['summarization']['min']:.3f}s / {d['summarization']['avg']:.3f}s / {d['summarization']['max']:.3f}s")
+        summary_text_blocks.append(f"  • LLM Inference: {d['llm_inference']['min']:.3f}s / {d['llm_inference']['avg']:.3f}s / {d['llm_inference']['max']:.3f}s\n")
         
         for state in data['states']:
             res_str = f"🧑 » {state['query']}\n🤖 » {state['final_response']}\n"
@@ -425,6 +456,6 @@ if __name__ == '__main__':
         
     print(f"\n✅ Saved overall latency plot to {latency_path}")
     print(f"✅ Saved overall throughput plot to {throughput_path}")
-    print(f"✅ Saved component stage latency plot to {stage_latency_path}")
+    print(f"✅ Saved component stage latency plot (with Min/Max bands) to {stage_latency_path}")
     print(f"✅ Detailed JSON results saved to: {detailed_file}")
     print(f"✅ Complete text summary saved to: {summary_file}")
