@@ -4,12 +4,9 @@ Accepts multiple queries as CLI args, runs the full tool chain in a single batch
 """
 import os
 import sys
-import time
 import timeit
 import argparse
 import json
-import random
-from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from collections import defaultdict
@@ -33,6 +30,22 @@ timing_stats = {
     'gpu': defaultdict(list)
 }
 
+# LOAD CACHE (Replaces live dataset and web search parsing)
+
+CACHE_FILE = "cached_search_results.json"
+SEARCH_CACHE = {}
+QUERY_POOL = []
+
+if os.path.exists(CACHE_FILE):
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        SEARCH_CACHE = json.load(f)
+        QUERY_POOL = list(SEARCH_CACHE.keys())
+    print(f"[INFO] Loaded {len(SEARCH_CACHE)} cached search entries.")
+else:
+    print(f"[ERROR] {CACHE_FILE} not found! Please run cache_builder.py first.")
+    sys.exit(1)
+
+
 # 1) Shared state schema
 class GraphState(TypedDict):
     query: str
@@ -49,42 +62,15 @@ def web_search(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     start_time = timeit.default_timer()
 
-    if not state["skip_web_search"]:
-        api_key = os.getenv("SERPER_API_KEY")
-        if not api_key:
-            nvtx.pop_range()
-            raise RuntimeError("Missing SERPER_API_KEY")
-
-        params = {
-            "q": state["query"],
-            "apiKey": api_key,
-            "num": 10
-        }
-
-        resp = requests.get(
-            "https://google.serper.dev/search",
-            params=params,
-            timeout=10
-        )
-        resp.raise_for_status()
-
-        data = resp.json()
-        items = data.get("organic", [])
-        urls = [item["link"] for item in items if "link" in item]
-
+    query = state["query"]
+    
+    # Fast local dictionary lookup
+    if not state["skip_web_search"] and query in SEARCH_CACHE:
+        urls = SEARCH_CACHE[query]
     else:
-        # Fallback list for offline testing
         urls = [
-            "https://en.wikipedia.org/wiki/Spiel_des_Jahres",
-            "https://boardgamegeek.com/wiki/page/Spiel_des_Jahres",
-            "https://www.reddit.com/r/boardgames/comments/buwap5/are_previous_spiel_des_jahres_winners_now_too/",
-            "https://boardgamegeek.com/thread/3282083/spiel-des-jahres-winners-1979-to-2023-and-who-do-y",
-            "https://blog.recommend.games/posts/thoughts-on-spiel-des-jahres/",
-            "https://www.spiel-des-jahres.de/en/award-winners-2024/",
-            "https://www.facebook.com/groups/132851767828/posts/10162746926537829/",
-            "https://www.tabletopgaming.co.uk/news/spiel-des-jahres-2024-winners-announced/",
-            "https://therewillbe.games/board-game-lists-and-guides/6214-the-ten-greatest-spiel-des-jahres-winners",
-            "https://www.dicebreaker.com/topics/spiel-des-jahres/best-games/overlooked-spiel-des-jahres-winners",
+            "https://en.wikipedia.org/wiki/Main_Page",
+            "https://www.bbc.com/news"
         ]
 
     elapsed = timeit.default_timer() - start_time
@@ -238,55 +224,23 @@ builder.set_finish_point('llm_inference_gpt_oss_20b')
 compiled_graph = builder.compile()
  
 
-# 4) Dataset Loader
-def load_random_questions(benchmark: str, num_tests: int) -> List[str]:
-    """Loads a random sample of questions from the specified JSONL dataset."""
-    benchmark = benchmark.lower()
-    file_path = Path(f"datasets/{benchmark}.jsonl")
-    
-    if not file_path.exists():
-        raise FileNotFoundError(f"Dataset file not found: {file_path}")
-        
-    questions = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-                
-            data = json.loads(line)
-            if "question" in data:
-                q_text = data["question"]
-                
-                # If it's a multiple choice dataset like QASC, append the choices
-                if "choices" in data and isinstance(data["choices"], list):
-                    choices_str = " ".join([f"({c.get('label', '')}) {c.get('text', '')}" for c in data["choices"]])
-                    q_text = f"{q_text} {choices_str}"
-                    
-                questions.append(q_text)
-                
-    if not questions:
-        raise ValueError(f"No valid questions found in {file_path}")
-        
-    if num_tests > len(questions):
-        print(f"[WARNING] Requested {num_tests} tests, but only {len(questions)} are available. Using all.")
-        num_tests = len(questions)
-
-    # Shuffle and return the requested number of tests
-    return random.sample(questions, num_tests)
-
-
-# 5) Batch invocation and Result Logging
+# 4) Batch invocation and Result Logging
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='LangChain batch orchestrator for latency/throughput visualization')
     parser.add_argument('--verbose', action='store_true', help='Enable output of per-stage latencies')
     parser.add_argument('--skip-web-search', action='store_true', help='Skip web search stage')
     parser.add_argument('--job-id', type=int, default=1, help="Job id for bash multiprocessing")
-    parser.add_argument('--benchmark', choices=["freshQA", "freshqa", "QASC", "qasc"], default="freshqa", help="Dataset to load")
+    parser.add_argument('--benchmark', default="cached_dataset", help="Dataset name for file logging")
     args = parser.parse_args()
 
     batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
+    total_needed_queries = sum(batch_sizes) 
+    
+    if total_needed_queries > len(QUERY_POOL):
+        print(f"[ERROR] Need {total_needed_queries} queries, but cache only has {len(QUERY_POOL)}. Re-run cache_builder.py")
+        sys.exit(1)
+
     latencies = []
     throughputs = []
     all_batch_results = {}
@@ -294,16 +248,14 @@ if __name__ == '__main__':
     os.makedirs("./results", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    print(f"[INFO] Running benchmarks for dataset '{args.benchmark}' on batch sizes: {batch_sizes}")
+    pool_cursor = 0
     
     for batch_size in batch_sizes:
         print(f"\n--- Testing Batch Size: {batch_size} ---")
-        try:
-            # We use `batch_size` as our `num_tests` parameter so the graph receives a list of exactly `batch_size` queries
-            queries = load_random_questions(args.benchmark, batch_size)
-        except Exception as e:
-            print(f"[ERROR] Failed to load dataset: {e}")
-            sys.exit(1)
+        
+        # Slice out completely unique queries for this batch size run directly from our cached keys
+        queries = QUERY_POOL[pool_cursor : pool_cursor + batch_size]
+        pool_cursor += batch_size
 
         initial_states = [
             {
@@ -391,9 +343,7 @@ if __name__ == '__main__':
         summary_text_blocks.append(stats_str)
         
     summary_text_blocks.append("\n" + "="*70 + "\nRESULTS PREVIEW\n" + "="*70)
-    
-    # We'll just print a preview of the last (largest) batch state to avoid terminal flood, 
-    # but write everything to the text file.
+
     for batch, data in all_batch_results.items():
         summary_text_blocks.append(f"\n--- BATCH SIZE: {batch} ---")
         for state in data['states']:
