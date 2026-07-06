@@ -44,7 +44,7 @@ class VLLMOpenAI(BaseLLM):
             data = {
                 "model": self.model,
                 "prompt": prompt,
-                "max_tokens": 512,
+                "max_tokens": 1024,  # Increased from 512 to prevent truncation on complex tasks
                 "temperature": self.temperature,
                 "stop": stop or []
             }
@@ -103,7 +103,7 @@ def _make_llm(model, temp, api_key, streaming: bool = False):
             callbacks=[StreamingStdOutCallbackHandler()],
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             openai_api_base=os.getenv("OPENAI_BASE_URL"),
-            max_tokens=200,
+            max_tokens=1024,  # Increased from 200 to prevent mid-thought truncation in medium/heavy tasks
             cache=None,
         )
     elif model.startswith("text-"):
@@ -114,7 +114,7 @@ def _make_llm(model, temp, api_key, streaming: bool = False):
             streaming=streaming,
             callbacks=[StreamingStdOutCallbackHandler()],
             openai_api_key=api_key,
-            max_tokens=200,  # Strict limit for 50-word responses to minimize LLM time
+            max_tokens=1024,  # Increased from 200 to accommodate multi-step reasoning outputs
             cache=None,  # Disable LangChain caching for accurate benchmarking
         )
     elif model == "vllm" or model.startswith("vllm"):
@@ -295,35 +295,27 @@ class ChemCrow:
                     llm_duration = time.time() - self.llm_start
                     
                     # Determine if this LLM call should be counted as tool time
-                    # This includes: calls within tools, or calls interpreting tool results
                     if self.tool_active and self.current_tool_name:
-                        # LLM call within a tool context - count as tool time
                         self.timing_metrics['tool_time'] += llm_duration
                         print(f"⏱️  TIMING: LLM call ended (within/for {self.current_tool_name}), duration: {llm_duration:.4f}s - COUNTED AS TOOL TIME")
                         
-                        # Track individual tool times
                         if 'individual_tool_times' not in self.timing_metrics:
                             self.timing_metrics['individual_tool_times'] = {}
                         if self.current_tool_name not in self.timing_metrics['individual_tool_times']:
                             self.timing_metrics['individual_tool_times'][self.current_tool_name] = 0
                         self.timing_metrics['individual_tool_times'][self.current_tool_name] += llm_duration
                         
-                        # Add to tools used
                         if 'tools_used' not in self.timing_metrics:
                             self.timing_metrics['tools_used'] = []
                         if self.current_tool_name not in self.timing_metrics['tools_used']:
                             self.timing_metrics['tools_used'].append(self.current_tool_name)
                     else:
-                        # Direct LLM call by agent - count as LLM time
                         self.timing_metrics['llm_time'] += llm_duration
                         print(f"⏱️  TIMING: LLM call ended (direct agent), duration: {llm_duration:.4f}s - COUNTED AS LLM TIME")
                     
-                    # Clear the tool result pending flag after processing
                     if self.tool_result_pending:
                         self.tool_result_pending = False
                         self.last_tool_completed = None
-                    
-                    # Removed 5-second delay to get accurate timing measurements
                     
                     self.llm_start = None
                 else:
@@ -332,13 +324,12 @@ class ChemCrow:
             def on_tool_start(self, serialized, input_str, **kwargs):
                 tool_name = serialized.get('name', 'Unknown')
                 self.current_tool_name = tool_name
-                self.tool_active = True  # Mark that we're now inside a tool
+                self.tool_active = True  
                 print(f"🔧 TOOL START: {tool_name}")
                 print(f"⏱️  DEBUG: Tool serialized: {serialized}")
                 print(f"⏱️  DEBUG: Tool input: {input_str[:100] if input_str else 'None'}...")
                 self.tool_start = time.time()
                 
-                # Track tools used
                 if 'tools_used' not in self.timing_metrics:
                     self.timing_metrics['tools_used'] = []
                 if tool_name not in self.timing_metrics['tools_used']:
@@ -352,7 +343,6 @@ class ChemCrow:
                     self.timing_metrics['tool_time'] += tool_duration
                     print(f"⏱️  TIMING: {self.current_tool_name} ended, duration: {tool_duration:.4f}s - COUNTED AS TOOL TIME")
                     
-                    # Track individual tool timings
                     if 'individual_tool_times' not in self.timing_metrics:
                         self.timing_metrics['individual_tool_times'] = {}
                     
@@ -361,25 +351,22 @@ class ChemCrow:
                     
                     self.timing_metrics['individual_tool_times'][self.current_tool_name] += tool_duration
                     
-                    # Mark that a tool just completed - next LLM call is likely interpreting its result
                     self.last_tool_completed = self.current_tool_name
                     self.tool_result_pending = True
                     
                     self.tool_start = None
                     self.current_tool_name = None
-                    self.tool_active = False  # Mark that we're no longer inside a tool
+                    self.tool_active = False  
                 else:
                     print(f"⏱️  TIMING: Tool end called but no start time recorded - tool_start: {self.tool_start}, current_tool: {self.current_tool_name}")
-                    self.tool_active = False  # Reset even on error
+                    self.tool_active = False  
                     
             def on_tool_error(self, error, **kwargs):
-                """Handle tool errors and still record timing"""
                 if self.tool_start and self.current_tool_name:
                     tool_duration = time.time() - self.tool_start
                     self.timing_metrics['tool_time'] += tool_duration
                     print(f"⏱️  TIMING: Tool call errored: {self.current_tool_name}, duration: {tool_duration:.4f}s, error: {error}")
                     
-                    # Track individual tool timings even on error
                     if 'individual_tool_times' not in self.timing_metrics:
                         self.timing_metrics['individual_tool_times'] = {}
                     
@@ -396,11 +383,9 @@ class ChemCrow:
                     self.tool_active = False
                     
             def on_chain_start(self, serialized, inputs, **kwargs):
-                # Required method for BaseCallbackHandler
                 pass
                 
             def on_chain_end(self, outputs, **kwargs):
-                # Required method for BaseCallbackHandler
                 pass
         
         # Create timing callback
@@ -410,49 +395,36 @@ class ChemCrow:
         original_callbacks = self.agent_executor.callbacks or []
         original_llm_callbacks = self.llm.callbacks or []
         
-        # Create external tool timing tracker (avoid Pydantic field restrictions)
         tool_timing_tracker = {}
         
-        # Add timing callback to agent executor, main LLM, and all tools
+        # Add timing callback to elements
         self.agent_executor.callbacks = original_callbacks + [timing_callback]
         self.llm.callbacks = original_llm_callbacks + [timing_callback]
         
-        # IMPORTANT: Add callbacks to tools that use LLMs for proper timing tracking
         for i, tool in enumerate(self.agent_executor.tools):
             try:
                 print(f"⏱️  DEBUG: Processing tool {i}: {tool.name} (type: {type(tool)})")
-                
-                # Due to Pydantic v2 restrictions, we cannot modify tool._run methods
-                # Instead, we rely on improved callback detection and post-execution analysis
-                # Store tool names for later reference
                 tool_timing_tracker[tool.name] = {
                     'type': type(tool).__name__,
                     'wrapped': False
                 }
                 
-                # Add callbacks to LLMs used by tools
                 if hasattr(tool, 'llm') and tool.llm is not None:
                     try:
                         original_tool_callbacks = getattr(tool.llm, 'callbacks', []) or []
                         tool.llm.callbacks = original_tool_callbacks + [timing_callback]
                         print(f"⏱️  Added timing callback to tool: {tool.name}")
                         
-                        # Special handling for SafetySummary tool
                         if tool.name == "SafetySummary":
-                            # Add callback to the main llm_chain
                             if hasattr(tool, 'llm_chain') and hasattr(tool.llm_chain, 'llm'):
                                 tool.llm_chain.llm.callbacks = (getattr(tool.llm_chain.llm, 'callbacks', []) or []) + [timing_callback]
                                 print(f"⏱️  Added timing callback to SafetySummary.llm_chain")
                             
-                            # Add callback to MoleculeSafety's LLM if it exists
                             if hasattr(tool, 'mol_safety') and hasattr(tool.mol_safety, 'llm') and tool.mol_safety.llm is not None:
                                 tool.mol_safety.llm.callbacks = (getattr(tool.mol_safety.llm, 'callbacks', []) or []) + [timing_callback]
                                 print(f"⏱️  Added timing callback to SafetySummary.mol_safety.llm")
                         
-                        # Special handling for Scholar2ResultLLM tool
-                        elif tool.name == "LiteratureSearch":  # Note: actual name is LiteratureSearch
-                            # The Scholar2ResultLLM tool has its own llm attribute used in paper_search
-                            # Add callback to that LLM as well to capture internal LLM calls
+                        elif tool.name == "LiteratureSearch":  
                             if hasattr(tool, 'llm') and tool.llm is not None:
                                 original_scholar_callbacks = getattr(tool.llm, 'callbacks', []) or []
                                 tool.llm.callbacks = original_scholar_callbacks + [timing_callback]
@@ -463,14 +435,9 @@ class ChemCrow:
                 
             except Exception as e:
                 print(f"⏱️  ERROR: Exception processing tool {i} ({getattr(tool, 'name', 'unknown')}): {e}")
-                import traceback
-                traceback.print_exc()
         
         print(f"⏱️  DEBUG: Added timing callback to agent, LLM, and processed {len(self.agent_executor.tools)} tools")
-        print(f"⏱️  CALLBACK: Agent executor callbacks: {len(self.agent_executor.callbacks)}")
-        print(f"⏱️  CALLBACK: Main LLM callbacks: {len(self.llm.callbacks)}")
         
-        # Ensure agent executor has the proper callback manager
         if hasattr(self.agent_executor, 'agent') and hasattr(self.agent_executor.agent, 'llm_chain'):
             chain_callbacks = getattr(self.agent_executor.agent.llm_chain, 'callbacks', []) or []
             self.agent_executor.agent.llm_chain.callbacks = chain_callbacks + [timing_callback]
@@ -481,27 +448,20 @@ class ChemCrow:
             outputs = self.agent_executor({"input": prompt})
             result = outputs["output"]
             
-            # Calculate total time
             timing_metrics['total_time'] = time.time() - timing_metrics['total_start']
             
-            # Restore original callbacks for all components
+            # Restore original callbacks
             self.agent_executor.callbacks = original_callbacks
             self.llm.callbacks = original_llm_callbacks
             
-            # Restore tool callbacks  
             for tool in self.agent_executor.tools:
                 if hasattr(tool, 'llm') and tool.llm is not None:
-                    # Remove our callback from tool
                     if hasattr(tool.llm, 'callbacks') and tool.llm.callbacks:
                         tool.llm.callbacks = [cb for cb in tool.llm.callbacks if cb != timing_callback]
                     
-                    # Special cleanup for SafetySummary tool
                     if tool.name == "SafetySummary":
-                        # Remove callback from llm_chain
                         if hasattr(tool, 'llm_chain') and hasattr(tool.llm_chain, 'llm') and hasattr(tool.llm_chain.llm, 'callbacks'):
                             tool.llm_chain.llm.callbacks = [cb for cb in tool.llm_chain.llm.callbacks if cb != timing_callback]
-                        
-                        # Remove callback from MoleculeSafety's LLM
                         if hasattr(tool, 'mol_safety') and hasattr(tool.mol_safety, 'llm') and hasattr(tool.mol_safety.llm, 'callbacks'):
                             tool.mol_safety.llm.callbacks = [cb for cb in tool.mol_safety.llm.callbacks if cb != timing_callback]
             
@@ -512,19 +472,14 @@ class ChemCrow:
             self.agent_executor.callbacks = original_callbacks
             self.llm.callbacks = original_llm_callbacks
             
-            # Restore tool callbacks on error too
             for tool in self.agent_executor.tools:
                 if hasattr(tool, 'llm') and tool.llm is not None:
                     if hasattr(tool.llm, 'callbacks') and tool.llm.callbacks:
                         tool.llm.callbacks = [cb for cb in tool.llm.callbacks if cb != timing_callback]
                     
-                    # Special cleanup for SafetySummary tool on error
                     if tool.name == "SafetySummary":
-                        # Remove callback from llm_chain
                         if hasattr(tool, 'llm_chain') and hasattr(tool.llm_chain, 'llm') and hasattr(tool.llm_chain.llm, 'callbacks'):
                             tool.llm_chain.llm.callbacks = [cb for cb in tool.llm_chain.llm.callbacks if cb != timing_callback]
-                        
-                        # Remove callback from MoleculeSafety's LLM
                         if hasattr(tool, 'mol_safety') and hasattr(tool.mol_safety, 'llm') and hasattr(tool.mol_safety.llm, 'callbacks'):
                             tool.mol_safety.llm.callbacks = [cb for cb in tool.mol_safety.llm.callbacks if cb != timing_callback]
             
