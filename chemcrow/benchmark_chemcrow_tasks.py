@@ -226,7 +226,7 @@ def main():
         print(f"   {i+1}. {task['name']}")
         print(f"      Description: {task['description']}")
     
-    # Run all 3 tasks automatically in sequence
+    # Run all tasks automatically in sequence
     print(f"\n🚀 Starting automatic execution of {len(tasks)} tasks...")
     selected_tasks = tasks
     
@@ -236,7 +236,7 @@ def main():
     # Results file path
     results_file = "/home/ritikraj/chemcrow/literature_search_benchmark_results.json"
     
-    # Start fresh benchmark (simple 3 tasks don't need resume functionality)
+    # Start fresh benchmark
     print("🆕 Starting fresh benchmark run")
     tasks_to_process = selected_tasks
     
@@ -265,6 +265,12 @@ def main():
             with open(results_file, 'w') as f:
                 json.dump(results, f, indent=2)
             print(f"💾 Progress saved: {current_index}/{total_planned} tasks completed")
+            
+            # ⏳ API RATE LIMIT SAFETY MITIGATION (Free Tier Protection)
+            # Only pause if there are remaining tasks to execute
+            if current_index < total_planned:
+                print("\n⏳ Pausing for 20 seconds to completely clear and reset Groq's 8,000 TPM limit...")
+                time.sleep(20)
             
         except KeyboardInterrupt:
             print(f"\n⏹️  Benchmark interrupted by user after {len(results)} tasks")
@@ -302,8 +308,11 @@ def main():
             with open(results_file, 'w') as f:
                 json.dump(results, f, indent=2)
             print(f"💾 Progress saved (including error): {current_index}/{total_planned} tasks processed")
-        
-        # No delay needed between simple literature search tasks
+            
+            # Pause even after a failure to ensure the next task starts with a fresh token pool
+            if current_index < total_planned:
+                print("\n⏳ Pausing for 20 seconds to reset rate limits after failure...")
+                time.sleep(20)
     
     print(f"\n✅ Benchmark completed!")
     print(f"💾 Final results saved to: {results_file}")
