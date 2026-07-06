@@ -8,40 +8,73 @@ import os
 import sys
 import json
 import time
+import argparse
 import numpy as np
 from typing import Dict, List, Any
 from chemcrow.agents import ChemCrow
 
-def get_curated_tasks():
+def get_curated_tasks(level: str = "simple") -> List[Dict[str, Any]]:
     """
-    Return curated tasks that only use the LiteratureSearch (paperscraper) tool.
-    These tasks focus on scientific literature search and research paper retrieval
-    for various chemistry and biochemistry topics.
+    Return curated tasks grouped by complexity level.
     """
-    tasks = [
-        {
-            "name": "aspirin_literature_search", 
-            "description": """Find papers on aspirin mechanism of action.""",
-            "expected_tools": ["LiteratureSearch"]
-        },
-        {
-            "name": "caffeine_literature_search",
-            "description": """Search for recent papers on caffeine metabolism.""",
-            "expected_tools": ["LiteratureSearch"]
-        },
-        {
-            "name": "warfarin_literature_search",
-            "description": """Find papers on warfarin drug interactions and metabolism.""",
-            "expected_tools": ["LiteratureSearch"]
-        },
-        {
-            "name": "nicotine_literature_search",
-            "description": """Search for recent studies on nicotine pharmacokinetics and distribution.""",
-            "expected_tools": ["LiteratureSearch"]
-        }
-    ]
-    
-    return tasks
+    if level == "simple":
+        return [
+            {
+                "name": "aspirin_literature_search", 
+                "description": """Find papers on aspirin mechanism of action.""",
+                "expected_tools": ["LiteratureSearch"]
+            },
+            {
+                "name": "caffeine_literature_search",
+                "description": """Search for recent papers on caffeine metabolism.""",
+                "expected_tools": ["LiteratureSearch"]
+            },
+            {
+                "name": "warfarin_literature_search",
+                "description": """Find papers on warfarin drug interactions and metabolism.""",
+                "expected_tools": ["LiteratureSearch"]
+            },
+            {
+                "name": "nicotine_literature_search",
+                "description": """Search for recent studies on nicotine pharmacokinetics and distribution.""",
+                "expected_tools": ["LiteratureSearch"]
+            }
+        ]
+        
+    elif level == "medium":
+        return [
+            {
+                "name": "ibuprofen_property_profile",
+                "description": """Find the SMILES string for Ibuprofen, compute its exact molecular weight, and identify all of its functional groups.""",
+                "expected_tools": ["Query2SMILES", "SMILES2Weight", "FuncGroups"]
+            },
+            {
+                "name": "paracetamol_safety_audit",
+                "description": """Look up the CAS number for Acetaminophen (Paracetamol). Check if it is classified as an explosive molecule or flagged as a controlled chemical.""",
+                "expected_tools": ["Query2CAS", "ExplosiveCheck", "ControlChemCheck"]
+            },
+            {
+                "name": "aspirin_similarity_match",
+                "description": """Calculate the Tanimoto similarity between the SMILES strings of Aspirin and Salicylic acid. Explain if they are considered structurally similar.""",
+                "expected_tools": ["MolSimilarity"]
+            }
+        ]
+        
+    elif level == "heavy":
+        return [
+            {
+                "name": "comprehensive_caffeine_audit",
+                "description": """Perform a total diagnostic profile on Caffeine. Find its CAS number and SMILES representation, extract its functional groups, check if its structure matches or is highly similar to any known controlled chemical list, and pull its detailed Safety Summary from PubChem data.""",
+                "expected_tools": ["Query2CAS", "Query2SMILES", "FuncGroups", "ControlChemCheck", "SafetySummary"]
+            },
+            {
+                "name": "metformin_literature_and_patent_profile",
+                "description": """Search recent academic papers regarding Metformin activation pathways. Identify its core chemical structure (SMILES), verify if there are any current patent flags associated with it, and evaluate if any of its chemical properties list structural or explosive hazards.""",
+                "expected_tools": ["Scholar2ResultLLM", "Query2SMILES", "PatentCheck", "ExplosiveCheck"]
+            }
+        ]
+    else:
+        raise ValueError(f"Unknown benchmark level: {level}")
 
 def run_chemcrow_benchmark(task_name: str, task_description: str, expected_tools: List[str] = None) -> Dict[str, Any]:
     """
@@ -199,130 +232,6 @@ def run_chemcrow_benchmark(task_name: str, task_description: str, expected_tools
             'error': str(e)
         }
 
-def main():
-    """Main benchmark runner for non-reaction API tasks"""
-    # DISABLE ALL CACHING for accurate benchmarking
-    import os
-    os.environ['LANGCHAIN_CACHE'] = 'false'
-    
-    # Disable global langchain cache if it exists
-    try:
-        import langchain
-        if hasattr(langchain, 'cache'):
-            langchain.cache = None
-    except:
-        pass
-    
-    print("🧪 ChemCrow Literature Search Benchmark")
-    print("📊 Focus: Scientific Literature Retrieval using LiteratureSearch Tool")
-    print("🚫 All caching disabled for accurate timing measurements")
-    print("=" * 70)
-    
-    # Get curated tasks that only use LiteratureSearch
-    tasks = get_curated_tasks()
-    print(f"📁 Loaded {len(tasks)} simple literature search tasks")
-    print("\nTasks to be executed:")
-    for i, task in enumerate(tasks):
-        print(f"   {i+1}. {task['name']}")
-        print(f"      Description: {task['description']}")
-    
-    # Run all tasks automatically in sequence
-    print(f"\n🚀 Starting automatic execution of {len(tasks)} tasks...")
-    selected_tasks = tasks
-    
-    # Benchmark results
-    results = []
-    
-    # Results file path
-    results_file = "./results/literature_search_benchmark_results.json"
-    
-    # Start fresh benchmark
-    print("🆕 Starting fresh benchmark run")
-    tasks_to_process = selected_tasks
-    
-    # Process all tasks sequentially
-    if not tasks_to_process:
-        print("🎉 No tasks to process!")
-        return []
-        
-    for i, task in enumerate(tasks_to_process):
-        current_index = i + 1
-        total_planned = len(tasks_to_process)
-        
-        print(f"\n📖 Processing {current_index}/{total_planned}: {task['name']}")
-        print("⚠️  Simple literature search - staying within 10k token API limits")
-        
-        try:
-            # Run benchmark with expected tools for validation
-            result = run_chemcrow_benchmark(
-                task['name'], 
-                task['description'],
-                task['expected_tools']
-            )
-            results.append(result)
-            
-            # 💾 SAVE AFTER EACH TASK to prevent data loss
-            with open(results_file, 'w') as f:
-                json.dump(results, f, indent=2)
-            print(f"💾 Progress saved: {current_index}/{total_planned} tasks completed")
-            
-            # ⏳ API RATE LIMIT SAFETY MITIGATION (Free Tier Protection)
-            # Only pause if there are remaining tasks to execute
-            if current_index < total_planned:
-                print("\n⏳ Pausing for 20 seconds to completely clear and reset Groq's 8,000 TPM limit...")
-                time.sleep(20)
-            
-        except KeyboardInterrupt:
-            print(f"\n⏹️  Benchmark interrupted by user after {len(results)} tasks")
-            print(f"💾 Results saved to: {results_file}")
-            print("🔄 Run again to resume from where you left off")
-            return results
-            
-        except Exception as e:
-            print(f"❌ Error in task {task['name']}: {e}")
-            # Still save what we have so far
-            error_result = {
-                'task_name': task['name'],
-                'task_description': task['description'],
-                'result': f"Error: {str(e)}",
-                'timing_metrics': {
-                    'total_time': 0,
-                    'llm_total_time': 0,
-                    'tool_total_time': 0,
-                    'prefill_inference_time': 0,
-                    'final_inference_time': 0,
-                    'wolfram_alpha_time': 0,
-                    'other_tools_time': 0,
-                    'framework_overhead': 0
-                },
-                'expected_tools': task.get('expected_tools', []),
-                'tools_used': [],
-                'tool_coverage': 0,
-                'success': False,
-                'chemistry_successful': False,
-                'error': str(e)
-            }
-            results.append(error_result)
-            
-            # Save even failed results
-            with open(results_file, 'w') as f:
-                json.dump(results, f, indent=2)
-            print(f"💾 Progress saved (including error): {current_index}/{total_planned} tasks processed")
-            
-            # Pause even after a failure to ensure the next task starts with a fresh token pool
-            if current_index < total_planned:
-                print("\n⏳ Pausing for 20 seconds to reset rate limits after failure...")
-                time.sleep(20)
-    
-    print(f"\n✅ Benchmark completed!")
-    print(f"💾 Final results saved to: {results_file}")
-    print(f"📊 Completed {len(results)} literature search tasks successfully")
-    
-    # Print comprehensive summary
-    print_benchmark_summary(results)
-    
-    return results
-
 def print_benchmark_summary(results: List[Dict[str, Any]]):
     """Print comprehensive benchmark summary with detailed analysis"""
     if not results:
@@ -332,7 +241,6 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
     print(f"\n📈 COMPREHENSIVE BENCHMARK SUMMARY")
     print("=" * 70)
     
-    # Success metrics
     successful_results = [r for r in results if r['success']]
     chemistry_successful = [r for r in results if r.get('chemistry_successful', False)]
     
@@ -340,10 +248,7 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
     print(f"🧪 Chemistry Success: {len(chemistry_successful)}/{len(results)} ({len(chemistry_successful)/len(results)*100:.1f}%)")
     
     if successful_results:
-        # Timing analysis
         print(f"\n⏱️  TIMING ANALYSIS:")
-        
-        # Overall timing
         avg_total = np.mean([r['timing_metrics']['total_time'] for r in successful_results])
         avg_llm = np.mean([r['timing_metrics']['llm_total_time'] for r in successful_results])
         avg_tools = np.mean([r['timing_metrics']['tool_total_time'] for r in successful_results])
@@ -354,7 +259,6 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
         print(f"   🔮 Average LLM Time: {avg_llm:.3f}s ({avg_llm/avg_total*100:.1f}%)")
         print(f"   🔧 Average Tool Time: {avg_tools:.3f}s ({avg_tools/avg_total*100:.1f}%)")
         
-        # LLM breakdown (prefill vs generation)
         avg_prefill = np.mean([r['timing_metrics']['prefill_inference_time'] for r in successful_results])
         avg_generation = np.mean([r['timing_metrics']['final_inference_time'] for r in successful_results])
         
@@ -362,7 +266,6 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
         print(f"   📝 Average Prefill: {avg_prefill:.3f}s ({avg_prefill/avg_total*100:.1f}%)")
         print(f"   ✨ Average Generation: {avg_generation:.3f}s ({avg_generation/avg_total*100:.1f}%)")
         
-        # Tool analysis
         avg_wolfram = np.mean([r['timing_metrics']['wolfram_alpha_time'] for r in successful_results])
         avg_other_tools = np.mean([r['timing_metrics']['other_tools_time'] for r in successful_results])
         
@@ -371,37 +274,29 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
             print(f"   🧮 Average WolframAlpha: {avg_wolfram:.3f}s ({avg_wolfram/avg_total*100:.1f}%)")
         print(f"   🛠️  Average Other Tools: {avg_other_tools:.3f}s ({avg_other_tools/avg_total*100:.1f}%)")
         
-        # Tool coverage analysis
         avg_coverage = np.mean([r['tool_coverage'] for r in successful_results])
         print(f"\n🎯 TOOL COVERAGE:")
         print(f"   📈 Average Coverage: {avg_coverage:.1%}")
         
-        # Per-task breakdown with detailed tool analysis
         print(f"\n📋 PER-TASK BREAKDOWN:")
         for result in successful_results:
             tm = result['timing_metrics']
             tools_used = result.get('tools_used', [])
-            expected_tools = result.get('expected_tools', [])
             
             print(f"   📝 {result['task_name'][:25]:25} | Total: {tm['total_time']:6.2f}s | "
                   f"LLM: {tm['llm_percentage']:4.1f}% | Tools: {tm['tool_percentage']:4.1f}% | "
                   f"Coverage: {result['tool_coverage']:4.1%}")
             print(f"      🛠️  Tools used: {', '.join(tools_used) if tools_used else 'None'}")
             
-            # Show individual tool times if available
             individual_times = result.get('individual_tool_times', {})
             if individual_times:
                 tool_times_str = ', '.join([f"{tool}:{time:.2f}s" for tool, time in individual_times.items()])
                 print(f"      ⏱️  Tool times: {tool_times_str}")
         
-        # Tool usage summary
         print(f"\n🔧 TOOL USAGE SUMMARY:")
-        all_tools_used = set()
         tool_frequency = {}
-        
         for result in successful_results:
             for tool in result.get('tools_used', []):
-                all_tools_used.add(tool)
                 tool_frequency[tool] = tool_frequency.get(tool, 0) + 1
         
         if tool_frequency:
@@ -409,7 +304,6 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
             for tool, count in sorted_tools:
                 print(f"   🛠️  {tool}: used in {count}/{len(successful_results)} tasks ({count/len(successful_results)*100:.1f}%)")
     
-    # Error analysis
     failed_results = [r for r in results if not r['success']]
     if failed_results:
         print(f"\n❌ FAILED TASKS ({len(failed_results)}):")
@@ -417,6 +311,113 @@ def print_benchmark_summary(results: List[Dict[str, Any]]):
             print(f"   ⚠️  {result['task_name']}: {result.get('error', 'Unknown error')}")
     
     print("=" * 70)
+
+def main():
+    """Main benchmark runner with CLI support for distinct execution tiers"""
+    # DISABLE ALL CACHING for accurate benchmarking
+    os.environ['LANGCHAIN_CACHE'] = 'false'
+    try:
+        import langchain
+        if hasattr(langchain, 'cache'):
+            langchain.cache = None
+    except:
+        pass
+        
+    # Setup Argument Parsing
+    parser = argparse.ArgumentParser(description="Run ChemCrow non-reaction benchmark profiles.")
+    parser.add_argument(
+        "--level", 
+        type=str, 
+        default="simple", 
+        choices=["simple", "medium", "heavy"],
+        help="Difficulty level tier of benchmark tasks to run (default: simple)"
+    )
+    args = parser.parse_args()
+    
+    print(f"🧪 ChemCrow Benchmark Suite [PROFILE: {args.level.upper()}]")
+    print("🚫 All caching disabled for accurate timing measurements")
+    print("=" * 70)
+    
+    try:
+        tasks = get_curated_tasks(level=args.level)
+    except Exception as e:
+        print(f"❌ Error loading tasks: {e}")
+        sys.exit(1)
+        
+    print(f"📁 Loaded {len(tasks)} tasks for evaluation.")
+    print("\nTasks to be executed:")
+    for i, task in enumerate(tasks):
+        print(f"   {i+1}. {task['name']}")
+        print(f"      Description: {task['description']}")
+        
+    print(f"\n🚀 Starting automatic execution of {len(tasks)} tasks...")
+    results = []
+    
+    # Establish separate file path per execution profile
+    os.makedirs("./results", exist_ok=True)
+    results_file = f"./results/{args.level}_benchmark_results.json"
+    
+    print(f"🆕 Starting fresh benchmark run. Tracking via: {results_file}")
+    total_planned = len(tasks)
+    
+    for i, task in enumerate(tasks):
+        current_index = i + 1
+        print(f"\n📖 Processing {current_index}/{total_planned}: {task['name']}")
+        
+        try:
+            result = run_chemcrow_benchmark(
+                task['name'], 
+                task['description'],
+                task.get('expected_tools', [])
+            )
+            results.append(result)
+            
+            # Save progressively to mitigate potential runtime crashes
+            with open(results_file, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"💾 Progress saved: {current_index}/{total_planned} tasks completed")
+            
+            # API Rate-Limit Safe Buffer
+            if current_index < total_planned:
+                print("\n⏳ Pausing for 20 seconds to completely clear and reset token rate limit allocation windows...")
+                time.sleep(20)
+                
+        except KeyboardInterrupt:
+            print(f"\n⏹️  Benchmark interrupted by user after {len(results)} tasks.")
+            print(f"💾 Interrupted results preserved to: {results_file}")
+            return results
+            
+        except Exception as e:
+            print(f"❌ Critical exception hit during task {task['name']}: {e}")
+            error_result = {
+                'task_name': task['name'],
+                'task_description': task['description'],
+                'result': f"Error: {str(e)}",
+                'timing_metrics': {
+                    'total_time': 0, 'llm_total_time': 0, 'tool_total_time': 0,
+                    'prefill_inference_time': 0, 'final_inference_time': 0,
+                    'wolfram_alpha_time': 0, 'other_tools_time': 0, 'framework_overhead': 0
+                },
+                'expected_tools': task.get('expected_tools', []),
+                'tools_used': [],
+                'tool_coverage': 0,
+                'success': False,
+                'chemistry_successful': False,
+                'error': str(e)
+            }
+            results.append(error_result)
+            with open(results_file, 'w') as f:
+                json.dump(results, f, indent=2)
+                
+            if current_index < total_planned:
+                print("\n⏳ Pausing for 20 seconds to reset rate limit windows following failure...")
+                time.sleep(20)
+                
+    print(f"\n✅ Benchmark processing complete!")
+    print(f"💾 Final results saved to: {results_file}")
+    
+    print_benchmark_summary(results)
+    return results
 
 if __name__ == "__main__":
     results = main()
