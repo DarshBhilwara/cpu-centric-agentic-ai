@@ -387,24 +387,32 @@ if __name__ == '__main__':
     throughput_path = f"./results/langchain_throughput_{timestamp}.png"
     plt.savefig(throughput_path, dpi=300, bbox_inches='tight')
     plt.close()
-
-    # 3) Component Stage Latency Plot (Network vs Summarization vs LLM) with Min/Max Bands
+# 3) Component Stage Latency Plot (Summarization & LLM Only)
     plt.figure(figsize=(12, 7))
     
-    # Summarization Plot (Avg line + Min/Max fill)
-    plt.plot(batch_sizes, stage_stats_summarize["avg"], marker='o', color='#FF9999', linewidth=3, markersize=8, label='Summarization Avg (CPU)')
-    plt.fill_between(batch_sizes, stage_stats_summarize["min"], stage_stats_summarize["max"], color='#FF9999', alpha=0.2, label='Summarization Min/Max')
+    sum_err_lower = [a - m for a, m in zip(stage_stats_summarize["avg"], stage_stats_summarize["min"])]
+    sum_err_upper = [m - a for m, a in zip(stage_stats_summarize["max"], stage_stats_summarize["avg"])]
+    sum_yerr = [sum_err_lower, sum_err_upper]
     
-    # LLM Plot (Avg line + Min/Max fill)
-    plt.plot(batch_sizes, stage_stats_llm["avg"], marker='s', color='#66B2FF', linewidth=3, markersize=8, label='LLM Inference Avg (GPU)')
-    plt.fill_between(batch_sizes, stage_stats_llm["min"], stage_stats_llm["max"], color='#66B2FF', alpha=0.2, label='LLM Min/Max')
+    llm_err_lower = [a - m for a, m in zip(stage_stats_llm["avg"], stage_stats_llm["min"])]
+    llm_err_upper = [m - a for m, a in zip(stage_stats_llm["max"], stage_stats_llm["avg"])]
+    llm_yerr = [llm_err_lower, llm_err_upper]
+
+    plt.plot(batch_sizes, stage_stats_summarize["avg"], color='#FF9999', linewidth=2, linestyle='-', zorder=1)
+    plt.errorbar(batch_sizes, stage_stats_summarize["avg"], yerr=sum_yerr, 
+                 fmt='o', color='#CC0000', ecolor='#CC0000', elinewidth=2, capsize=5, 
+                 capthick=2, markersize=8, label='Summarization (CPU)', zorder=2)
+    plt.plot(batch_sizes, stage_stats_llm["avg"], color='#66B2FF', linewidth=2, linestyle='-', zorder=1)
+    plt.errorbar(batch_sizes, stage_stats_llm["avg"], yerr=llm_yerr, 
+                 fmt='s', color='#0055AA', ecolor='#0055AA', elinewidth=2, capsize=5, 
+                 capthick=2, markersize=8, label='LLM Inference (GPU)', zorder=2)
 
     plt.xlabel('Batch Size', fontsize=16, fontweight='bold')
     plt.ylabel('Stage Latency (s)', fontsize=16, fontweight='bold')
-    plt.title('Pipeline Stage Latencies (Avg with Min/Max Bands)', fontsize=18, fontweight='bold')
+    plt.title('Pipeline Stage Latencies (Summarization vs LLM)', fontsize=18, fontweight='bold')
     plt.xscale('log', base=2)
     plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
-    plt.legend(fontsize=10, loc='upper left')
+    plt.legend(fontsize=12, loc='upper left')
     plt.grid(True, alpha=0.3)
     stage_latency_path = f"./results/stage_latency_{timestamp}.png"
     plt.savefig(stage_latency_path, dpi=300, bbox_inches='tight')
@@ -456,6 +464,6 @@ if __name__ == '__main__':
         
     print(f"\n✅ Saved overall latency plot to {latency_path}")
     print(f"✅ Saved overall throughput plot to {throughput_path}")
-    print(f"✅ Saved component stage latency plot (with Min/Max bands) to {stage_latency_path}")
+    print(f"✅ Saved component stage latency plot to {stage_latency_path}")
     print(f"✅ Detailed JSON results saved to: {detailed_file}")
     print(f"✅ Complete text summary saved to: {summary_file}")
