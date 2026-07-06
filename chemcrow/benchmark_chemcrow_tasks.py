@@ -234,7 +234,7 @@ def main():
     results = []
     
     # Results file path
-    results_file = "/home/ritikraj/chemcrow/literature_search_benchmark_results.json"
+    results_file = "./results/literature_search_benchmark_results.json"
     
     # Start fresh benchmark
     print("🆕 Starting fresh benchmark run")
