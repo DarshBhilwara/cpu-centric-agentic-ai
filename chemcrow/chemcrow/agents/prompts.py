@@ -5,19 +5,15 @@ solve the problem to the best of your ability using the provided tools.
 """
 
 FORMAT_INSTRUCTIONS = """
-You can only respond with a single complete
-"Thought, Action, Action Input" format
-OR a single "Final Answer" format.
+You MUST respond using exactly one of the two formats below. Do not add extra text, commentary, or timestamps.
 
-Complete format:
+### Format 1: To use a tool
+Thought: Reflect on your progress and what you need to find out next.
+Action: The action name (must be one of [{tool_names}]).
+Action Input: The specific input argument for the tool.
 
-Thought: (reflect on your progress and decide what to do next)
-Action: (the action name, should be one of [{tool_names}])
-Action Input: (the input string to the action)
-
-OR
-
-Final Answer: (the final answer to the original input question)
+### Format 2: To provide the final answer
+Final Answer: The definitive final answer to the original input question.
 """
 
 QUESTION_PROMPT = """

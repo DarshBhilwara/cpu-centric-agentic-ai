@@ -237,9 +237,15 @@ class SimilarControlChemCheck(BaseTool):
     def _run(self, smiles: str) -> str:
         """Checks max similarity between compound and controlled chemicals.
         Input SMILES string."""
-
-        data_path = pkg_resources.resource_filename("chemcrow", "data/chem_wep_smi.csv")
-        cw_df = pd.read_csv(data_path)
+        
+        # Dynamically resolve path relative to this file's location
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        data_path = os.path.join(current_dir, "..", "data", "chem_wep_smi.csv")
+        
+        try:
+            cw_df = pd.read_csv(data_path)
+        except FileNotFoundError:
+            return f"Tool Error: The controlled chemicals database was not found at {data_path}. Please download the data directory into your chemcrow folder."
 
         try:
             if not is_smiles(smiles):
@@ -257,8 +263,8 @@ class SimilarControlChemCheck(BaseTool):
                     f"({max_sim:.4}) to a known controlled chemical. "
                     "This is substance is safe, you may proceed with the task."
                 )
-        except:
-            return "Tool error."
+        except Exception as e:
+            return f"Tool error: {str(e)}"
 
     def tanimoto(self, s1, s2):
         sim = tanimoto(s1, s2)
@@ -278,8 +284,16 @@ class ControlChemCheck(BaseTool):
 
     def _run(self, query: str) -> str:
         """Checks if compound is a controlled chemical. Input CAS number."""
-        data_path = pkg_resources.resource_filename("chemcrow", "data/chem_wep_smi.csv")
-        cw_df = pd.read_csv(data_path)
+        
+        # Dynamically resolve path relative to this file's location
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        data_path = os.path.join(current_dir, "..", "data", "chem_wep_smi.csv")
+        
+        try:
+            cw_df = pd.read_csv(data_path)
+        except FileNotFoundError:
+            return f"Tool Error: The controlled chemicals database was not found at {data_path}. Please download the data directory into your chemcrow folder."
+
         try:
             if is_smiles(query):
                 query_esc = re.escape(query)
