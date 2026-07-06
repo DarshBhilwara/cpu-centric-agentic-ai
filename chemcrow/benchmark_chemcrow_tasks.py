@@ -65,7 +65,7 @@ def run_chemcrow_benchmark(task_name: str, task_description: str, expected_tools
         # Initialize ChemCrow
         print("🔧 Initializing ChemCrow...")
         init_start = time.time()
-        chem_model = ChemCrow(model='gpt-4-0613', tools_model='gpt-4-0613', temp=0.1, max_iterations=10)
+        chem_model = ChemCrow(model='openai/gpt-oss-120b', tools_model='openai/gpt-oss-120b', temp=0.1, max_iterations=10)
         init_time = time.time() - init_start
         print(f"✅ Initialized in {init_time:.3f}s")
         
