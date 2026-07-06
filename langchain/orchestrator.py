@@ -128,10 +128,15 @@ def fetch_url(state_or_states):
         return result
 
 
-def _lexrank_one(text: str) -> str:
+def _lexrank_one(text: str, max_chars: int = 50000) -> str:
     """Run LexRank on a single document and return one-sentence summary."""
+    if len(text) > max_chars:
+        text = text[:max_chars]
     summarizer = LexRankSummarizer()
     doc = PlaintextParser.from_string(text, Tokenizer("english")).document
+    if not doc.sentences:
+        return ""
+        
     sentences = summarizer(doc, sentences_count=1)
     return " ".join(str(s) for s in sentences)
 
