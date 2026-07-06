@@ -1,6 +1,6 @@
 from typing import Optional
 import requests
-
+import os
 import langchain
 from dotenv import load_dotenv
 from langchain import PromptTemplate, chains
@@ -94,16 +94,17 @@ from .tools import make_tools
 
 
 def _make_llm(model, temp, api_key, streaming: bool = False):
-    if model.startswith("gpt-3.5-turbo") or model.startswith("gpt-4"):
+    if model.startswith("gpt-3.5-turbo") or model.startswith("gpt"):
         llm = langchain.chat_models.ChatOpenAI(
             temperature=temp,
             model_name=model,
             request_timeout=1000,
             streaming=streaming,
             callbacks=[StreamingStdOutCallbackHandler()],
-            openai_api_key=api_key,
-            max_tokens=200,  # Strict limit for 50-word responses to minimize LLM time
-            cache=None,  # Disable LangChain caching for accurate benchmarking
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            openai_api_base=os.getenv("OPENAI_BASE_URL"),
+            max_tokens=200,
+            cache=None,
         )
     elif model.startswith("text-"):
         llm = langchain.OpenAI(

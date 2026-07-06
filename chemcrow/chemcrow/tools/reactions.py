@@ -5,7 +5,7 @@ import ast
 import re
 from time import sleep
 from typing import Optional
-
+import os
 import requests
 
 import json
@@ -101,12 +101,13 @@ class RXNRetrosynthesisLocal(BaseTool):
 
     def _summary_gpt(self, json: dict) -> str:
         """Describe synthesis."""
-        llm = ChatOpenAI(  # type: ignore
+        llm = ChatOpenAI(
             temperature=0.05,
-            model_name="gpt-3.5-turbo-16k",
+            model_name=os.getenv("OPENAI_MODEL", "openai/gpt-oss-120b"),
             request_timeout=2000,
             max_tokens=2000,
-            openai_api_key=self.openai_api_key,
+            openai_api_key=os.getenv("OPENAI_API_KEY"),
+            openai_api_base=os.getenv("OPENAI_BASE_URL"),
         )
         prompt = (
             "Here is a chemical synthesis described as a json.\nYour task is "
