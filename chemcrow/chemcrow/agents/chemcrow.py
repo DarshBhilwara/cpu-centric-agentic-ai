@@ -170,6 +170,7 @@ class ChemCrow:
             ),
             verbose=True,
             max_iterations=max_iterations,
+            handle_parsing_errors=True, 
         )
 
         rephrase = PromptTemplate(

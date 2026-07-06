@@ -5,15 +5,15 @@ solve the problem to the best of your ability using the provided tools.
 """
 
 FORMAT_INSTRUCTIONS = """
-You MUST respond using exactly one of the two formats below. Do not add extra text, commentary, or timestamps.
+You must strictly respond in one of the two following formats formats only. Do not include markdown wrappers like ``` or conversational filler.
 
-### Format 1: To use a tool
-Thought: Reflect on your progress and what you need to find out next.
-Action: The action name (must be one of [{tool_names}]).
-Action Input: The specific input argument for the tool.
+Format 1 (To use a tool):
+Thought: <your tracking thought process>
+Action: <the exact tool name chosen from [{tool_names}]>
+Action Input: <the raw input string for the tool>
 
-### Format 2: To provide the final answer
-Final Answer: The definitive final answer to the original input question.
+Format 2 (To provide the final answer):
+Final Answer: <your complete and detailed response to the user>
 """
 
 QUESTION_PROMPT = """
