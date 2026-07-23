@@ -10,7 +10,6 @@ import argparse
 import json
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
-from collections import defaultdict
 from typing import List, Optional, TypedDict, Dict, Any
 
 import nvtx
@@ -27,14 +26,14 @@ import matplotlib.pyplot as plt
 # Global timing storage focused ONLY on CPU and GPU
 timing_stats = {
     'cpu': {
-        'summarize_total': defaultdict(list),
-        'parse_doc': defaultdict(list),
-        'lexrank_algo': defaultdict(list)
+        'summarize_total': [],
+        'parse_doc': [],
+        'lexrank_algo': []
     },
     'gpu': {
-        'llm_total': defaultdict(list),
-        'ttft': defaultdict(list), # Time To First Token (Prefill)
-        'decode_time': defaultdict(list) # Time spent generating tokens
+        'llm_total': [],
+        'ttft': [], # Time To First Token (Prefill)
+        'decode_time': [] # Time spent generating tokens
     }
 }
 
