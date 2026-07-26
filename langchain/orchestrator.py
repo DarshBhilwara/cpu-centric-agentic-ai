@@ -9,8 +9,17 @@ import timeit
 import argparse
 import json
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import List, Optional, TypedDict, Dict, Any
+
+# Attempt to automatically increase the OS open file limit for large batches
+try:
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    # Increase soft limit to at least 8192 or the max hard limit available
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
+except Exception:
+    pass
 
 import nvtx
 import requests
@@ -32,8 +41,8 @@ timing_stats = {
     },
     'gpu': {
         'llm_total': [],
-        'ttft': [], # Time To First Token (Prefill)
-        'decode_time': [] # Time spent generating tokens
+        'ttft': [], 
+        'decode_time': [] 
     }
 }
 
@@ -62,7 +71,7 @@ class GraphState(TypedDict):
     job_id: int
     skip_web_search: bool
 
-# 2) Tool implementations (Network profiling removed)
+# 2) Tool implementations
 def web_search(state: GraphState) -> GraphState:
     query = state["query"]
     if not state["skip_web_search"] and query in SEARCH_CACHE:
@@ -94,19 +103,18 @@ def _fetch_url_single_state(state: GraphState) -> GraphState:
 
 def fetch_url(state_or_states):  
     if isinstance(state_or_states, list):
-        max_workers = max(min(len(state_or_states), os.cpu_count() or 1), 1)
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        # Changed to ThreadPoolExecutor to prevent "Too many open files" (FD exhaustion)
+        max_workers = min(len(state_or_states), 64) 
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
             results = list(pool.map(_fetch_url_single_state, state_or_states))
         return results
     else:
         return _fetch_url_single_state(state_or_states)
 
 def _lexrank_one_detailed(text: str, max_chars: int = 50000) -> Dict[str, Any]:
-    """Run LexRank and return detailed CPU timing breakdown."""
     if len(text) > max_chars:
         text = text[:max_chars]
         
-    # Phase 1: Parsing/Tokenization
     t_start = timeit.default_timer()
     doc = PlaintextParser.from_string(text, Tokenizer("english")).document
     t_parse = timeit.default_timer() - t_start
@@ -114,7 +122,6 @@ def _lexrank_one_detailed(text: str, max_chars: int = 50000) -> Dict[str, Any]:
     if not doc.sentences:
         return {"summary": "", "parse_time": t_parse, "algo_time": 0.0}
         
-    # Phase 2: LexRank Algorithm
     t_algo_start = timeit.default_timer()
     summarizer = LexRankSummarizer()
     sentences = summarizer(doc, sentences_count=1)
@@ -129,13 +136,13 @@ def summarize(state: GraphState) -> GraphState:
     start_time = timeit.default_timer() 
  
     max_workers = max(min(len(state["page_texts"]), os.cpu_count() or 1), 1)
+    # CPU bound, so ProcessPoolExecutor remains here
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         detailed_results = list(pool.map(_lexrank_one_detailed, state["page_texts"]))
  
     elapsed = timeit.default_timer() - start_time
     timing_stats['cpu']['summarize_total'].append(elapsed)
     
-    # Store granular CPU stats
     for res in detailed_results:
         timing_stats['cpu']['parse_doc'].append(res["parse_time"])
         timing_stats['cpu']['lexrank_algo'].append(res["algo_time"])
@@ -153,7 +160,7 @@ def final_answer(state: GraphState) -> GraphState:
         base_url='http://localhost:5000/v1',
         model="openai/gpt-oss-20b",
         openai_api_key='EMPTY',
-        streaming=True # Enable streaming for TTFT extraction
+        streaming=True 
     )
     
     prompt = f"Based on these summaries, answer: {state['query']}\n\n" + "\n\n".join(state['summaries'])
@@ -162,17 +169,16 @@ def final_answer(state: GraphState) -> GraphState:
     ttft = None
     response_chunks = []
     
-    # Stream to calculate TTFT (GPU Prefill) and decode times
     for chunk in llm.stream(prompt):
         if ttft is None:
             ttft = timeit.default_timer() - t_start
         response_chunks.append(chunk)
         
     t_end = timeit.default_timer()
-    total_time = t_end - t_start
-    decode_time = total_time - (ttft if ttft else 0)
+    time_taken = t_end - t_start
+    decode_time = time_taken - (ttft if ttft else 0)
     
-    timing_stats['gpu']['llm_total'].append(total_time)
+    timing_stats['gpu']['llm_total'].append(time_taken)
     timing_stats['gpu']['ttft'].append(ttft if ttft else 0)
     timing_stats['gpu']['decode_time'].append(decode_time)
     
@@ -267,12 +273,10 @@ if __name__ == '__main__':
             }
 
             nvtx.push_range(f'batch_run_{mode}_{batch_size}')
-            start_time = timeit.default_timer()
             
             # Run batch invocation
             result_states = compiled_graph.batch(initial_states, config=cfg)
             
-            total_time = timeit.default_timer() - start_time
             nvtx.pop_range()
 
             # Calculate granular stats for this batch
@@ -285,16 +289,19 @@ if __name__ == '__main__':
                 "gpu_decode": calculate_stats(timing_stats['gpu']['decode_time'][idx_tracker['gpu_decode']:]),
             }
 
-            throughput = batch_size / total_time
+            # Redefine total_time to EXCLUDE network time. 
+            # It is now strictly the max time spent in CPU stage + max time spent in GPU stage.
+            total_time_no_network = b_stats['cpu_total']['max'] + b_stats['gpu_total']['max']
+            throughput = batch_size / total_time_no_network if total_time_no_network > 0 else 0
             
             all_batch_results[mode][batch_size] = {
-                "latency_s": total_time,
+                "latency_s": total_time_no_network,
                 "throughput_qps": throughput,
                 "hardware_details": b_stats,
                 "states": result_states
             }
             
-            print(f"Overall Latency: {total_time:.2f}s | Throughput: {throughput:.2f} q/s")
+            print(f"Hardware Latency (No Network): {total_time_no_network:.2f}s | Throughput: {throughput:.2f} q/s")
             print(f"  -> CPU Breakdown (Avg): Total: {b_stats['cpu_total']['avg']:.3f}s | Parse: {b_stats['cpu_parse']['avg']:.3f}s | Algo: {b_stats['cpu_algo']['avg']:.3f}s")
             print(f"  -> GPU Breakdown (Avg): Total: {b_stats['gpu_total']['avg']:.3f}s | Prefill (TTFT): {b_stats['gpu_ttft']['avg']:.3f}s | Decode: {b_stats['gpu_decode']['avg']:.3f}s")
 
@@ -312,8 +319,8 @@ if __name__ == '__main__':
             plt.plot(b_sizes, lats, marker=styles[mode]["marker"], color=styles[mode]["color"], linewidth=2, markersize=8, label=f'{mode.capitalize()} Queries')
             
     plt.xlabel('Batch Size', fontsize=14, fontweight='bold')
-    plt.ylabel('Latency (s)', fontsize=14, fontweight='bold')
-    plt.title('Overall Latency by Batch Mode', fontsize=16, fontweight='bold')
+    plt.ylabel('Hardware Latency (s) [Network Excluded]', fontsize=14, fontweight='bold')
+    plt.title('Hardware Latency by Batch Mode', fontsize=16, fontweight='bold')
     plt.xscale('log', base=2)
     plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
     plt.grid(True, alpha=0.3)
@@ -332,7 +339,7 @@ if __name__ == '__main__':
 
     plt.xlabel('Batch Size', fontsize=14, fontweight='bold')
     plt.ylabel('Throughput (queries/sec)', fontsize=14, fontweight='bold')
-    plt.title('Throughput by Batch Mode', fontsize=16, fontweight='bold')
+    plt.title('Hardware Throughput by Batch Mode', fontsize=16, fontweight='bold')
     plt.xscale('log', base=2)
     plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
     plt.grid(True, alpha=0.3)
@@ -408,7 +415,7 @@ if __name__ == '__main__':
     summary_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}_summary.txt")
     summary_lines = []
     summary_lines.append("="*70)
-    summary_lines.append("HARDWARE BENCHMARK SUMMARY")
+    summary_lines.append("HARDWARE BENCHMARK SUMMARY (NETWORK EXCLUDED)")
     summary_lines.append("="*70)
 
     for mode in batch_modes:
@@ -416,8 +423,8 @@ if __name__ == '__main__':
             summary_lines.append(f"\n\n{'='*30}\nMODE: {mode.upper()} QUERIES\n{'='*30}")
             for batch, data in all_batch_results[mode].items():
                 summary_lines.append(f"\n--- BATCH SIZE: {batch} ---")
-                summary_lines.append(f"• Total Latency:          {data['latency_s']:.2f}s")
-                summary_lines.append(f"• Throughput:             {data['throughput_qps']:.2f} queries/s")
+                summary_lines.append(f"• Hardware Latency:       {data['latency_s']:.2f}s")
+                summary_lines.append(f"• Hardware Throughput:    {data['throughput_qps']:.2f} queries/s")
                 
                 hd = data['hardware_details']
                 summary_lines.append("\n  [CPU Breakdown - Min / Avg / Max]")
@@ -429,7 +436,6 @@ if __name__ == '__main__':
                 summary_lines.append(f"  • Decode (Gen):   {hd['gpu_decode']['min']:.3f}s / {hd['gpu_decode']['avg']:.3f}s / {hd['gpu_decode']['max']:.3f}s")
                 
                 summary_lines.append("\n  [Responses Sample]")
-                # Just show the first response to keep summary manageable
                 if data['states']:
                     state = data['states'][0]
                     summary_lines.append(f"  🧑 » {state['query']}")
