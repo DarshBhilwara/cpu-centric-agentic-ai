@@ -1,7 +1,6 @@
 """
 Batch web-LLM orchestrator using LangGraph batching with detailed per-query CPU/GPU profiling.
-Accepts multiple queries as CLI args, runs the full tool chain in a single batched graph invocation.
-Runs in two batching modes ("same" and "different" queries) and generates comprehensive plots.
+Uses pre-cached parsed text (zero network overhead).
 """
 import os
 import sys
@@ -9,21 +8,18 @@ import timeit
 import argparse
 import json
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from typing import List, Optional, TypedDict, Dict, Any
+from concurrent.futures import ProcessPoolExecutor
+from typing import List, TypedDict, Dict, Any
 
 # Attempt to automatically increase the OS open file limit for large batches
 try:
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    # Increase soft limit to at least 8192 or the max hard limit available
     resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
 except Exception:
     pass
 
 import nvtx
-import requests
-from bs4 import BeautifulSoup
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.summarizers.lex_rank import LexRankSummarizer
@@ -46,74 +42,39 @@ timing_stats = {
     }
 }
 
-# LOAD CACHE
-CACHE_FILE = "cached_search_results.json"
-SEARCH_CACHE = {}
+# LOAD CACHED PAGE TEXTS
+CACHE_FILE = "cached_pages.json"
+PAGE_CACHE = {}
 QUERY_POOL = []
 
 if os.path.exists(CACHE_FILE):
     with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        SEARCH_CACHE = json.load(f)
-        QUERY_POOL = list(SEARCH_CACHE.keys())
-    print(f"[INFO] Loaded {len(SEARCH_CACHE)} cached search entries.")
+        PAGE_CACHE = json.load(f)
+        QUERY_POOL = list(PAGE_CACHE.keys())
+    print(f"[INFO] Loaded {len(PAGE_CACHE)} cached page entries.")
 else:
-    print(f"[ERROR] {CACHE_FILE} not found! Please run cache_builder.py first.")
+    print(f"[ERROR] {CACHE_FILE} not found! Please run download_and_cache.py first.")
     sys.exit(1)
 
 
 # 1) Shared state schema
 class GraphState(TypedDict):
     query: str
-    urls: List[str]
     page_texts: List[str]
     summaries: List[str]
     final_response: str
     job_id: int
-    skip_web_search: bool
 
 # 2) Tool implementations
-def web_search(state: GraphState) -> GraphState:
+def load_cached_pages(state: GraphState) -> GraphState:
+    """Retrieve pre-downloaded, pre-parsed page text directly from local RAM/cache."""
     query = state["query"]
-    if not state["skip_web_search"] and query in SEARCH_CACHE:
-        urls = SEARCH_CACHE[query]
-    else:
-        urls = [
-            "https://en.wikipedia.org/wiki/Main_Page",
-            "https://www.bbc.com/news"
-        ]
-    return {"urls": urls}
-
-def _fetch_single(url: str, timeout: float = 10.0) -> Optional[str]:
-    try:
-        r = requests.get(url, timeout=timeout)
-        r.raise_for_status()
-        return BeautifulSoup(r.text, "html.parser").get_text(separator="\n")
-    except requests.RequestException:
-        return None
-
-def _fetch_url_single_state(state: GraphState) -> GraphState: 
-    texts: List[str] = []
-    for url in state["urls"]:
-        if len(texts) >= 2:
-            break
-        txt = _fetch_single(url)
-        if txt:
-            texts.append(txt)
+    texts = PAGE_CACHE.get(query, [])
     return {"page_texts": texts}
 
-def fetch_url(state_or_states):  
-    if isinstance(state_or_states, list):
-        # Changed to ThreadPoolExecutor to prevent "Too many open files" (FD exhaustion)
-        max_workers = min(len(state_or_states), 64) 
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            results = list(pool.map(_fetch_url_single_state, state_or_states))
-        return results
-    else:
-        return _fetch_url_single_state(state_or_states)
-
-def _lexrank_one_detailed(text: str, max_chars: int = 1000000) -> Dict[str, Any]:
-#    if len(text) > max_chars:
-#        text = text[:max_chars]
+def _lexrank_one_detailed(text: str, max_chars: int = 10000000) -> Dict[str, Any]:
+    if len(text) > max_chars:
+        text = text[:max_chars]
         
     t_start = timeit.default_timer()
     doc = PlaintextParser.from_string(text, Tokenizer("english")).document
@@ -135,8 +96,8 @@ def summarize(state: GraphState) -> GraphState:
     nvtx.push_range(marker)
     start_time = timeit.default_timer() 
  
-    max_workers = max(min(len(state["page_texts"]), os.cpu_count() or 1), 1)
-    # CPU bound, so ProcessPoolExecutor remains here
+    max_workers = min(len(state["page_texts"]), 1) if state["page_texts"] else 1
+    # CPU bound processing
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         detailed_results = list(pool.map(_lexrank_one_detailed, state["page_texts"]))
  
@@ -188,14 +149,12 @@ def final_answer(state: GraphState) -> GraphState:
  
 # 3) Build and compile the graph
 builder = StateGraph(GraphState)
-builder.set_entry_point('web_search')
-builder.add_node('web_search', web_search)
-builder.add_node('fetch_url', fetch_url)
+builder.set_entry_point('load_cached_pages')
+builder.add_node('load_cached_pages', load_cached_pages)
 builder.add_node('summarize_lexrank', summarize)
 builder.add_node('llm_inference_gpt_oss_20b', final_answer)
 
-builder.add_edge('web_search', 'fetch_url')
-builder.add_edge('fetch_url', 'summarize_lexrank')
+builder.add_edge('load_cached_pages', 'summarize_lexrank')
 builder.add_edge('summarize_lexrank', 'llm_inference_gpt_oss_20b')
 builder.set_finish_point('llm_inference_gpt_oss_20b')
 
@@ -205,7 +164,6 @@ compiled_graph = builder.compile()
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='LangChain batch orchestrator for deep CPU/GPU visualization')
     parser.add_argument('--verbose', action='store_true', help='Enable output of per-stage latencies')
-    parser.add_argument('--skip-web-search', action='store_true', help='Skip web search stage')
     parser.add_argument('--job-id', type=int, default=1, help="Job id for bash multiprocessing")
     parser.add_argument('--benchmark', default="detailed_hardware_stats", help="Dataset name for file logging")
     args = parser.parse_args()
@@ -250,19 +208,16 @@ if __name__ == '__main__':
             initial_states = [
                 {
                     'query': q,
-                    'urls': [],
                     'page_texts': [],
                     'summaries': [],
                     'final_response': '',
-                    'job_id': args.job_id,
-                    'skip_web_search': args.skip_web_search
+                    'job_id': args.job_id
                 }
                 for q in queries
             ]
 
             cfg = RunnableConfig(max_concurrency=batch_size)
             
-            # Track list lengths to isolate this batch's stats
             idx_tracker = {
                 'cpu_total': len(timing_stats['cpu']['summarize_total']),
                 'cpu_parse': len(timing_stats['cpu']['parse_doc']),
@@ -274,12 +229,10 @@ if __name__ == '__main__':
 
             nvtx.push_range(f'batch_run_{mode}_{batch_size}')
             
-            # Run batch invocation
             result_states = compiled_graph.batch(initial_states, config=cfg)
             
             nvtx.pop_range()
 
-            # Calculate granular stats for this batch
             b_stats = {
                 "cpu_total": calculate_stats(timing_stats['cpu']['summarize_total'][idx_tracker['cpu_total']:]),
                 "cpu_parse": calculate_stats(timing_stats['cpu']['parse_doc'][idx_tracker['cpu_parse']:]),
@@ -289,25 +242,21 @@ if __name__ == '__main__':
                 "gpu_decode": calculate_stats(timing_stats['gpu']['decode_time'][idx_tracker['gpu_decode']:]),
             }
 
-            # Redefine total_time to EXCLUDE network time. 
-            # It is now strictly the max time spent in CPU stage + max time spent in GPU stage.
-            total_time_no_network = b_stats['cpu_total']['max'] + b_stats['gpu_total']['max']
-            throughput = batch_size / total_time_no_network if total_time_no_network > 0 else 0
+            total_hardware_time = b_stats['cpu_total']['max'] + b_stats['gpu_total']['max']
+            throughput = batch_size / total_hardware_time if total_hardware_time > 0 else 0
             
             all_batch_results[mode][batch_size] = {
-                "latency_s": total_time_no_network,
+                "latency_s": total_hardware_time,
                 "throughput_qps": throughput,
                 "hardware_details": b_stats,
                 "states": result_states
             }
             
-            print(f"Hardware Latency (No Network): {total_time_no_network:.2f}s | Throughput: {throughput:.2f} q/s")
+            print(f"Hardware Latency: {total_hardware_time:.2f}s | Throughput: {throughput:.2f} q/s")
             print(f"  -> CPU Breakdown (Avg): Total: {b_stats['cpu_total']['avg']:.3f}s | Parse: {b_stats['cpu_parse']['avg']:.3f}s | Algo: {b_stats['cpu_algo']['avg']:.3f}s")
             print(f"  -> GPU Breakdown (Avg): Total: {b_stats['gpu_total']['avg']:.3f}s | Prefill (TTFT): {b_stats['gpu_ttft']['avg']:.3f}s | Decode: {b_stats['gpu_decode']['avg']:.3f}s")
 
-    # ==========================================
-    # --- Plotting Section ---
-    # ==========================================
+    # Plotting Section
     styles = {"same": {"color": "#1f77b4", "marker": "o"}, "different": {"color": "#ff7f0e", "marker": "D"}}
     
     # 1) Overall Latency Plot
@@ -319,7 +268,7 @@ if __name__ == '__main__':
             plt.plot(b_sizes, lats, marker=styles[mode]["marker"], color=styles[mode]["color"], linewidth=2, markersize=8, label=f'{mode.capitalize()} Queries')
             
     plt.xlabel('Batch Size', fontsize=14, fontweight='bold')
-    plt.ylabel('Hardware Latency (s) [Network Excluded]', fontsize=14, fontweight='bold')
+    plt.ylabel('Hardware Latency (s)', fontsize=14, fontweight='bold')
     plt.title('Hardware Latency by Batch Mode', fontsize=16, fontweight='bold')
     plt.xscale('log', base=2)
     plt.xticks(batch_sizes, labels=[str(x) for x in batch_sizes])
@@ -348,7 +297,7 @@ if __name__ == '__main__':
     plt.savefig(throughput_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    # 3) CPU Breakdown (Parse vs Algo)
+    # 3) CPU Breakdown
     plt.figure(figsize=(12, 7))
     for mode in batch_modes:
         if mode in all_batch_results and all_batch_results[mode]:
@@ -370,7 +319,7 @@ if __name__ == '__main__':
     plt.savefig(cpu_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    # 4) GPU Breakdown (TTFT vs Decode)
+    # 4) GPU Breakdown
     plt.figure(figsize=(12, 7))
     for mode in batch_modes:
         if mode in all_batch_results and all_batch_results[mode]:
@@ -392,11 +341,7 @@ if __name__ == '__main__':
     plt.savefig(gpu_path, dpi=300, bbox_inches='tight')
     plt.close()
 
-    # ==========================================
-    # --- File Output Generation ---
-    # ==========================================
-    
-    # 1. Detailed JSON output
+    # Output Files
     detailed_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}_detailed.json")
     detailed_data = {
         "metadata": {
@@ -411,12 +356,8 @@ if __name__ == '__main__':
     with open(detailed_file, 'w', encoding='utf-8') as f:
         json.dump(detailed_data, f, indent=4)
         
-    # 2. Text Summary Output
     summary_file = os.path.join("results", f"{args.benchmark.lower()}_{timestamp}_summary.txt")
-    summary_lines = []
-    summary_lines.append("="*70)
-    summary_lines.append("HARDWARE BENCHMARK SUMMARY (NETWORK EXCLUDED)")
-    summary_lines.append("="*70)
+    summary_lines = ["="*70, "HARDWARE BENCHMARK SUMMARY (PURE CPU/GPU)", "="*70]
 
     for mode in batch_modes:
         if mode in all_batch_results and all_batch_results[mode]:
@@ -434,12 +375,6 @@ if __name__ == '__main__':
                 summary_lines.append("\n  [GPU Breakdown - Min / Avg / Max]")
                 summary_lines.append(f"  • Prefill (TTFT): {hd['gpu_ttft']['min']:.3f}s / {hd['gpu_ttft']['avg']:.3f}s / {hd['gpu_ttft']['max']:.3f}s")
                 summary_lines.append(f"  • Decode (Gen):   {hd['gpu_decode']['min']:.3f}s / {hd['gpu_decode']['avg']:.3f}s / {hd['gpu_decode']['max']:.3f}s")
-                
-                summary_lines.append("\n  [Responses Sample]")
-                if data['states']:
-                    state = data['states'][0]
-                    summary_lines.append(f"  🧑 » {state['query']}")
-                    summary_lines.append(f"  🤖 » {state['final_response'][:200]}...")
 
     with open(summary_file, 'w', encoding='utf-8') as f:
         f.write("\n".join(summary_lines))
